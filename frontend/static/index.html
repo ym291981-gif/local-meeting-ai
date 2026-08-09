@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>リアルタイムAI議事録・文書活用支援ツール</title>
+<link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+<header class="app-header">
+  <h1>リアルタイムAI議事録・文書活用支援ツール</h1>
+  <div class="meeting-controls">
+    <input id="meeting-title-input" type="text" placeholder="会議名(例: 定例会議)" />
+    <button id="start-meeting-btn" class="btn btn-primary">会議を開始</button>
+    <button id="stop-meeting-btn" class="btn btn-danger" disabled>会議を終了</button>
+    <span id="meeting-status" class="meeting-status">会議は開始していません</span>
+  </div>
+</header>
+
+<main class="app-main">
+  <section class="panel transcript-panel">
+    <h2>会議全文記録(文字起こし)</h2>
+    <p class="panel-hint">Whisperによる準リアルタイム文字起こし。発言をクリックすると内容や話者を修正できます。</p>
+    <div id="transcript-list" class="transcript-list"></div>
+  </section>
+
+  <aside class="side-column">
+    <section class="panel minutes-panel">
+      <div class="panel-title-row">
+        <h2>議事録</h2>
+        <button id="edit-minutes-btn" class="btn btn-small" disabled>修正する</button>
+      </div>
+      <p class="panel-hint">Qwen3が整理した議事録です。会議中でも確認・修正できます。</p>
+      <div id="minutes-view" class="minutes-view">
+        <p class="empty-hint">まだ議事録は生成されていません。</p>
+      </div>
+      <div id="minutes-edit-form" class="minutes-edit-form" hidden></div>
+    </section>
+
+    <section class="panel speakers-panel">
+      <h2>話者</h2>
+      <p class="panel-hint">AIが分けた話者(speaker_01等)へ参加者名を割り当てたり、統合したりできます。</p>
+      <div id="speakers-list" class="speakers-list"></div>
+    </section>
+
+    <section class="panel participants-panel">
+      <h2>参加者一覧</h2>
+      <p class="panel-hint">発言しない参加者も手動で登録できます。</p>
+      <div class="participant-add-row">
+        <input id="participant-name-input" type="text" placeholder="参加者名" />
+        <button id="add-participant-btn" class="btn btn-small">追加</button>
+      </div>
+      <ul id="participants-list" class="participants-list"></ul>
+    </section>
+  </aside>
+</main>
+
+<script src="/js/api.js"></script>
+<script src="/js/transcript.js"></script>
+<script src="/js/minutes.js"></script>
+<script src="/js/speakers.js"></script>
+<script src="/js/participants.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>

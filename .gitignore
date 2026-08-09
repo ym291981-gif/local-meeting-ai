@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# 環境変数・秘密情報
+.env
+backend/.env
+
+# データベース・生成物
+backend/data/
+*.db
+*.sqlite3
+
+# デモ音声(生成物。generate_demo_audio.pyで再生成できる)
+backend/tests/fixtures/*.wav
+
+# ログ
+*.log
+
+# OS/IDE
+.DS_Store
+.idea/
+.vscode/

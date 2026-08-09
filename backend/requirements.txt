@@ -1,0 +1,35 @@
+# --- Web / API ---
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+websockets==13.1
+python-multipart==0.0.17
+pydantic==2.10.3
+pydantic-settings==2.7.0
+
+# --- DB ---
+sqlalchemy==2.0.36
+
+# --- 音声取得(Windows WASAPIループバック) ---
+PyAudioWPatch==0.2.12.8
+numpy==2.1.3
+scipy==1.14.1
+
+# --- 文字起こし(Whisper) ---
+faster-whisper==1.1.0
+
+# --- 話者分離(pyannote) ---
+# 既知のVRAM急増バグ(4.0.x系)を避けるため3.3系に固定する
+pyannote.audio==3.3.2
+
+# --- 議事録生成LLM連携(Ollama) ---
+ollama==0.4.4
+
+# --- 設定・環境変数 ---
+python-dotenv==1.0.1
+
+# --- 開発・テスト ---
+pytest==8.3.4
+httpx==0.27.2
+requests==2.32.3
+pyttsx3==2.98
+

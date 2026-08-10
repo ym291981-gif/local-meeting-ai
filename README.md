@@ -60,8 +60,15 @@ copy .env.example .env
 `.env` を開き、必要に応じて値を変更してください。特に以下は動作に必須です。
 
 - `HF_TOKEN`: [Hugging Face](https://hf.co/settings/tokens) で発行したアクセストークン。
-  事前に [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1)
-  の利用規約に同意しておく必要があります。
+  事前に以下3つのモデルページで利用規約に同意しておく必要があります(いずれもログイン後、
+  ページ内の同意フォームを送信するだけです)。
+  - [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)
+  - [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0)
+  - [pyannote/embedding](https://huggingface.co/pyannote/embedding)
+
+  **注**: `pyannote/speaker-diarization-community-1`(最新モデル)はpyannote.audio 4.0系専用で、
+  本プロジェクトが使う3.3系(VRAM急増バグ回避のため固定)では動作しないため、
+  一世代前の`speaker-diarization-3.1`を採用しています。
 - GPUがない場合は `WHISPER_DEVICE=cpu`, `DIARIZATION_DEVICE=cpu`, `WHISPER_COMPUTE_TYPE=int8` に変更してください。
 
 ### 3. Ollama側の準備
@@ -143,9 +150,25 @@ pytest
 ## 技術的な注意点・既知の制約
 
 - **pyannote.audioのバージョン**: 4.0.x系の一部バージョンでVRAM使用量が急増する既知の
-  不具合が報告されているため、`requirements.txt`では3.3.2系に固定しています。
+  不具合が報告されているため、`requirements.txt`では3.3.2系に固定しています。これに伴い、
+  3.3系と互換性のない`pyannote/speaker-diarization-community-1`(最新モデル、4.0系専用)
+  ではなく、一世代前の`pyannote/speaker-diarization-3.1`を話者分離モデルとして使用しています。
+- **huggingface_hubのバージョン**: `pyannote.audio==3.3.2`は`use_auth_token`引数を使う
+  古い`huggingface_hub`のAPIに依存しているため、これを廃止した1.0以降と組み合わせると
+  `Pipeline.from_pretrained()`が失敗します。`requirements.txt`で`huggingface_hub==0.36.2`
+  に固定しています。
+- **speechbrainのWindows限定バグ**: pyannoteの話者embeddingモデルが内部で使う
+  `speechbrain`には、Windowsのパス区切り(`\`)を想定していない判定処理が原因で、
+  不要な`k2`モジュールを要求して`ImportError`になる既知の不具合があります
+  (`app/pipeline/diarization.py`内で起動時にパッチを当てて回避しています)。
+- **WhisperとpyannoteのcuDNN競合(重要)**: Whisper(ctranslate2)とpyannote(torch)を
+  両方`cuda`に設定すると、それぞれが同梱する`cuDNN`のバージョンが競合し、**Pythonの例外
+  ではなくプロセスそのものがクラッシュする**既知の問題を確認しています。そのため
+  `.env`では`WHISPER_DEVICE=cuda` / `DIARIZATION_DEVICE=cpu`の組み合わせを既定値としています。
+  両方をcudaにしたい場合は、Whisperとpyannoteを別プロセスに分離するなどの対応が別途必要です。
 - **VRAMが厳しい場合**: `.env`の`DIARIZATION_DEVICE=cpu`に変更することで、話者分離のみ
-  CPUで実行できます(文字起こし・議事録生成はGPUのまま利用可能)。
+  CPUで実行できます(文字起こし・議事録生成はGPUのまま利用可能)。上記のcuDNN競合を
+  避ける意味でも、既定では`cpu`を推奨します。
 - **チャンク境界**: 固定時間でのチャンク分割時に発言が途切れる可能性を減らすため、
   無音区間を探して境界を調整する簡易VADを実装していますが、完全ではありません。
 - **議事録生成の出力ゆらぎ**: Qwen3の出力がJSON形式から外れる場合、直前の議事録を

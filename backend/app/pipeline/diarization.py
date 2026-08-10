@@ -19,12 +19,70 @@ from threading import Lock
 
 import numpy as np
 import torch
-from pyannote.audio import Inference, Model, Pipeline
 from sqlalchemy.orm import Session
 
 from app.db.models import Speaker
 
 logger = logging.getLogger(__name__)
+
+
+def _patch_speechbrain_windows_lazy_import() -> None:
+    """speechbrainのLazyModule判定処理はUnix専用パス判定("/inspect.py"で終わるか)
+    のため、Windowsではinspectモジュールからの内部プローブを誤って実インポートと
+    判定してしまい、未インストールの任意依存(k2)を要求するImportErrorで落ちる
+    既知の不具合(speechbrain側で修正PR提出済み・未リリース)がある。
+    ここではその判定処理だけをクロスプラットフォーム対応版に置き換える。
+    """
+    try:
+        import os as _os
+
+        from speechbrain.utils import importutils as _sb_importutils
+
+        _original_ensure_module = _sb_importutils.LazyModule.ensure_module
+
+        def _patched_ensure_module(self, stacklevel: int):
+            import inspect as _inspect
+            import sys as _sys
+
+            importer_frame = None
+            try:
+                importer_frame = _inspect.getframeinfo(_sys._getframe(stacklevel + 1))
+            except AttributeError:
+                pass
+
+            if importer_frame is not None and _os.path.basename(
+                importer_frame.filename
+            ) == "inspect.py":
+                raise AttributeError()
+
+            if self.lazy_module is None:
+                import importlib as _importlib
+
+                try:
+                    if self.package is None:
+                        self.lazy_module = _importlib.import_module(self.target)
+                    else:
+                        self.lazy_module = _importlib.import_module(
+                            f".{self.target}", self.package
+                        )
+                except Exception as e:  # noqa: BLE001
+                    raise ImportError(f"Lazy import of {self!r} failed") from e
+
+            return self.lazy_module
+
+        _sb_importutils.LazyModule.ensure_module = _patched_ensure_module
+        logger.debug(
+            "speechbrainのLazyModule判定処理をWindows対応版に置き換えました "
+            "(original=%s)",
+            _original_ensure_module,
+        )
+    except Exception:  # noqa: BLE001 - パッチ失敗時は元の挙動のまま続行する
+        logger.debug("speechbrainのWindows向けパッチ適用に失敗しました(無視して続行)")
+
+
+_patch_speechbrain_windows_lazy_import()
+
+from pyannote.audio import Inference, Model, Pipeline  # noqa: E402
 
 _MIN_TURN_SECONDS = 0.3
 
@@ -59,8 +117,11 @@ class DiarizationEngine:
         if self._pipeline is not None:
             return
         logger.info("pyannote話者分離パイプラインを読み込みます: device=%s", self._device)
+        # 注: pyannote/speaker-diarization-community-1はpyannote.audio 4.0系専用のため、
+        # VRAM急増バグを避けて3.3系に固定している本プロジェクトでは使用できない。
+        # 3.3系と互換性のあるspeaker-diarization-3.1を使用する。
         self._pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-community-1", token=self._hf_token
+            "pyannote/speaker-diarization-3.1", use_auth_token=self._hf_token
         )
         self._pipeline.to(torch.device(self._device))
 

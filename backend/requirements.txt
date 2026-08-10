@@ -20,6 +20,9 @@ faster-whisper==1.1.0
 # --- 話者分離(pyannote) ---
 # 既知のVRAM急増バグ(4.0.x系)を避けるため3.3系に固定する
 pyannote.audio==3.3.2
+# pyannote.audio==3.3.2はhuggingface_hubのuse_auth_token引数に依存しているため、
+# それを廃止した1.0以降ではPipeline.from_pretrained()が失敗する。0.x系に固定する。
+huggingface_hub==0.36.2
 
 # --- 議事録生成LLM連携(Ollama) ---
 ollama==0.4.4

@@ -83,6 +83,15 @@ def _validate_minutes_json(raw: str) -> dict | None:
     if not all(key in data and isinstance(data[key], list) for key in _REQUIRED_KEYS):
         logger.warning("Qwen3の出力に必要なキーが不足しています: %s", list(data.keys()))
         return None
+    # 各キーの値は辞書のリストであることを期待している(例: [{"text": "..."}])。
+    # Qwen3が稀に文字列のリスト等を返すことがあるため、ここで型を検証し、
+    # 期待と異なる場合はJSON全体を不正とみなして呼び出し元にリトライ/保持させる。
+    for key in _REQUIRED_KEYS:
+        if not all(isinstance(item, dict) for item in data[key]):
+            logger.warning(
+                "Qwen3の出力の'%s'に辞書以外の要素が含まれています: %s", key, data[key]
+            )
+            return None
     return data
 
 

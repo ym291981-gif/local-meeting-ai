@@ -4,6 +4,8 @@ Zoom会議のPC内部音声を準リアルタイムで文字起こしし、話�
 ローカルLLM(Qwen3)による「議事録」を、それぞれ独立したデータとして保存するツールです。
 
 詳細な要件は [docs/requirements.md](docs/requirements.md) を参照してください。
+開発中につまずいた点・工夫した点は
+[docs/challenges-and-learnings.md](docs/challenges-and-learnings.md) にまとめています。
 
 会議音声・文字起こし・議事録などの社内情報は外部へ送信せず、すべてローカルPC上で処理します
 (Whisper / pyannote / Qwen3(Ollama)はすべてローカル実行)。

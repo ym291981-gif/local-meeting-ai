@@ -66,7 +66,10 @@ copy .env.example .env
   ページ内の同意フォームを送信するだけです)。
   - [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)
   - [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0)
-  - [pyannote/embedding](https://huggingface.co/pyannote/embedding)
+  - [pyannote/wespeaker-voxceleb-resnet34-LM](https://huggingface.co/pyannote/wespeaker-voxceleb-resnet34-LM)
+
+  話者の横断クラスタリングには、分離パイプライン内蔵のWeSpeaker embeddingを使います
+  (古い`pyannote/embedding`は使いません)。
 
   **注**: `pyannote/speaker-diarization-community-1`(最新モデル)はpyannote.audio 4.0系専用で、
   本プロジェクトが使う3.3系(VRAM急増バグ回避のため固定)では動作しないため、
@@ -159,10 +162,13 @@ pytest
   古い`huggingface_hub`のAPIに依存しているため、これを廃止した1.0以降と組み合わせると
   `Pipeline.from_pretrained()`が失敗します。`requirements.txt`で`huggingface_hub==0.36.2`
   に固定しています。
-- **speechbrainのWindows限定バグ**: pyannoteの話者embeddingモデルが内部で使う
-  `speechbrain`には、Windowsのパス区切り(`\`)を想定していない判定処理が原因で、
-  不要な`k2`モジュールを要求して`ImportError`になる既知の不具合があります
-  (`app/pipeline/diarization.py`内で起動時にパッチを当てて回避しています)。
+- **speechbrainのWindows限定バグ**: 以前は`pyannote/embedding`(speechbrain依存)を
+  別途読み込んでいましたが、現在はパイプライン内蔵のWeSpeakerを使います。
+  念のため`app/pipeline/diarization.py`の起動時パッチは残しています。
+- **話者クラスタリング**: 短い発話ごとに別IDを切ると同一人物が`speaker_01`〜
+  `speaker_10`以上に分裂することがありました。チャンク内の同じローカル話者は
+  1回だけ割り当て、既定の距離閾値は`0.65`です。`.env`の
+  `SPEAKER_SIMILARITY_THRESHOLD`で調整できます。
 - **WhisperとpyannoteのcuDNN競合(重要)**: Whisper(ctranslate2)とpyannote(torch)を
   両方`cuda`に設定すると、それぞれが同梱する`cuDNN`のバージョンが競合し、**Pythonの例外
   ではなくプロセスそのものがクラッシュする**既知の問題を確認しています。そのため

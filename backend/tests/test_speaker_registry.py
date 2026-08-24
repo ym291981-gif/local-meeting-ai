@@ -14,7 +14,13 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.db.models import Meeting  # noqa: E402
-from app.pipeline.diarization import SpeakerRegistry  # noqa: E402
+from app.pipeline.diarization import (  # noqa: E402
+    DiarizedTurn,
+    SpeakerRegistry,
+    assign_local_labels,
+    cosine_distance,
+    l2_normalize,
+)
 
 
 def _make_meeting(session_local) -> int:
@@ -73,3 +79,49 @@ def test_centroid_updates_as_running_mean(test_db):
     speaker1_updated = registry.assign(embedding_a2)
     assert speaker1_updated.id == speaker1.id
     assert speaker1_updated.embedding_count == 2
+    centroid = np.asarray(speaker1_updated.embedding_centroid, dtype=np.float32)
+    assert abs(float(np.linalg.norm(centroid)) - 1.0) < 1e-5
+
+
+def test_assign_local_labels_clusters_once_per_label(test_db):
+    meeting_id = _make_meeting(test_db)
+    db = test_db()
+    registry = SpeakerRegistry(db, meeting_id, similarity_threshold=0.3)
+    embedding = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    turns = [
+        DiarizedTurn(start_ms=0, end_ms=1000, local_label="SPEAKER_00", embedding=embedding),
+        DiarizedTurn(start_ms=2000, end_ms=3000, local_label="SPEAKER_00", embedding=embedding),
+        DiarizedTurn(
+            start_ms=4000,
+            end_ms=5000,
+            local_label="SPEAKER_01",
+            embedding=np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        ),
+    ]
+
+    mapping = assign_local_labels(registry, turns)
+
+    assert mapping["SPEAKER_00"].id != mapping["SPEAKER_01"].id
+    assert mapping["SPEAKER_00"].embedding_count == 1
+    assert mapping["SPEAKER_01"].embedding_count == 1
+
+
+def test_default_threshold_merges_moderate_cosine_distance(test_db):
+    """コサイン距離0.5は旧閾値0.45では分裂し、新既定0.65では同一話者になる。"""
+    meeting_id = _make_meeting(test_db)
+    db = test_db()
+    registry = SpeakerRegistry(db, meeting_id, similarity_threshold=0.65)
+
+    embedding_a = np.array([1.0, 0.0], dtype=np.float32)
+    embedding_b = np.array([0.5, np.sqrt(0.75)], dtype=np.float32)  # コサイン類似度0.5
+    assert abs(cosine_distance(embedding_a, embedding_b) - 0.5) < 1e-5
+
+    speaker1 = registry.assign(embedding_a)
+    speaker2 = registry.assign(embedding_b)
+    assert speaker1.id == speaker2.id
+
+
+def test_l2_normalize_unit_length():
+    vec = l2_normalize(np.array([3.0, 4.0], dtype=np.float32))
+    assert abs(float(np.linalg.norm(vec)) - 1.0) < 1e-6
+

@@ -21,7 +21,12 @@ from app.config import Settings
 from app.db.models import Meeting, MeetingStatus, MinutesSnapshot, Utterance
 from app.db.session import SessionLocal
 from app.pipeline.asr import TranscribedSegment, WhisperTranscriber
-from app.pipeline.diarization import DiarizationEngine, DiarizedTurn, SpeakerRegistry
+from app.pipeline.diarization import (
+    DiarizationEngine,
+    DiarizedTurn,
+    SpeakerRegistry,
+    assign_local_labels,
+)
 from app.pipeline.minutes import MinutesData, MinutesGenerator
 
 logger = logging.getLogger(__name__)
@@ -181,6 +186,7 @@ class PipelineOrchestrator:
         registry = SpeakerRegistry(
             db, meeting_id, similarity_threshold=self._settings.speaker_similarity_threshold
         )
+        local_to_speaker = assign_local_labels(registry, turns)
 
         for seg in segments:
             try:
@@ -188,9 +194,10 @@ class PipelineOrchestrator:
                 speaker_db_id = None
                 speaker_label = None
                 if best_turn is not None:
-                    speaker = registry.assign(best_turn.embedding)
-                    speaker_db_id = speaker.id
-                    speaker_label = speaker.display_label or speaker.label
+                    speaker = local_to_speaker.get(best_turn.local_label)
+                    if speaker is not None:
+                        speaker_db_id = speaker.id
+                        speaker_label = speaker.display_label or speaker.label
 
                 utterance = Utterance(
                     meeting_id=meeting_id,

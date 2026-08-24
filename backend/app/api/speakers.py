@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Participant, Speaker
 from app.db.session import get_db
+from app.pipeline.diarization import l2_normalize
 from app.schemas import SpeakerAssignRequest, SpeakerMergeRequest, SpeakerOut
 
 router = APIRouter(prefix="/api/meetings/{meeting_id}/speakers", tags=["speakers"])
@@ -90,7 +91,7 @@ async def merge_speaker(
         n_s, n_t = source.embedding_count, target.embedding_count
         total = n_s + n_t
         if total > 0:
-            merged = (s_centroid * n_s + t_centroid * n_t) / total
+            merged = l2_normalize((s_centroid * n_s + t_centroid * n_t) / total)
             target.embedding_centroid = merged.tolist()
             target.embedding_count = total
 

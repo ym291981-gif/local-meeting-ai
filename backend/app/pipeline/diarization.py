@@ -5,11 +5,12 @@ pyannoteの診断はチャンク単位ではローカルなラベル(SPEAKER_00�
 以下の2段構成で会議全体を通じて一貫したSpeaker IDを維持する。
 
     1. DiarizationEngine.diarize_chunk()
-       チャンク内の発話区間(ローカルな話者ラベル付き)とそのembeddingを検出する。
-    2. SpeakerRegistry.assign()
-       各発話区間のembeddingベクトルを、既知のSpeaker(embedding_centroid)と
-       コサイン距離で比較し、閾値以内なら既存のspeaker_NNへ、閾値外なら新しい
-       speaker_NNを発行して割り当てる(オンライン話者クラスタリング)。
+       チャンク内の発話区間を検出し、ローカル話者ごとに1つのembeddingを付ける。
+       embeddingはパイプライン内蔵のWeSpeaker(pyannote/wespeaker-voxceleb-resnet34-LM)
+       から取得する。短いクリップごとに古いpyannote/embeddingを回さない。
+    2. assign_local_labels() + SpeakerRegistry.assign()
+       チャンク内の同じローカルラベルは1回だけクラスタリングし、得たSpeaker IDを
+       そのラベルの全発話へ使い回す。会議をまたぐ同一性はコサイン距離で判定する。
 """
 from __future__ import annotations
 
@@ -82,9 +83,13 @@ def _patch_speechbrain_windows_lazy_import() -> None:
 
 _patch_speechbrain_windows_lazy_import()
 
-from pyannote.audio import Inference, Model, Pipeline  # noqa: E402
+from pyannote.audio import Pipeline  # noqa: E402
 
 _MIN_TURN_SECONDS = 0.3
+_MIN_EMBEDDING_SECONDS = 0.5
+# speaker-diarization-3.1 のクラスタ閾値は約0.70。オンライン(貪欲)割当は
+# 別人の誤結合を少し抑えるため、やや厳しめの0.65を既定にする。
+DEFAULT_SIMILARITY_THRESHOLD = 0.65
 
 
 @dataclass
@@ -95,6 +100,39 @@ class DiarizedTurn:
     end_ms: int
     local_label: str
     embedding: np.ndarray
+
+
+def l2_normalize(vector: np.ndarray) -> np.ndarray:
+    """L2正規化する。ゼロベクトルはそのまま返す。"""
+    vec = np.asarray(vector, dtype=np.float32).reshape(-1)
+    norm = float(np.linalg.norm(vec))
+    if not np.isfinite(norm) or norm == 0.0:
+        return vec
+    return (vec / norm).astype(np.float32)
+
+
+def cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
+    """L2正規化済みベクトル同士のコサイン距離(0=同一, 2=正反対)。"""
+    a_n = l2_normalize(a)
+    b_n = l2_normalize(b)
+    denom = float(np.linalg.norm(a_n) * np.linalg.norm(b_n))
+    if denom == 0.0:
+        return 1.0
+    similarity = float(np.dot(a_n, b_n) / denom)
+    similarity = max(-1.0, min(1.0, similarity))
+    return 1.0 - similarity
+
+
+def assign_local_labels(
+    registry: SpeakerRegistry, turns: list[DiarizedTurn]
+) -> dict[str, Speaker]:
+    """チャンク内の同じローカルラベルは1回だけ SpeakerRegistry に渡す。"""
+    mapping: dict[str, Speaker] = {}
+    for turn in turns:
+        if turn.local_label in mapping:
+            continue
+        mapping[turn.local_label] = registry.assign(turn.embedding)
+    return mapping
 
 
 class DiarizationEngine:
@@ -110,7 +148,6 @@ class DiarizationEngine:
         self._hf_token = hf_token or None
         self._embedding_batch_size = embedding_batch_size
         self._pipeline: Pipeline | None = None
-        self._embedding_inference: Inference | None = None
         self._lock = Lock()
 
     def _ensure_loaded(self) -> None:
@@ -124,17 +161,19 @@ class DiarizationEngine:
             "pyannote/speaker-diarization-3.1", use_auth_token=self._hf_token
         )
         self._pipeline.to(torch.device(self._device))
-
-        embedding_model = Model.from_pretrained("pyannote/embedding", use_auth_token=self._hf_token)
-        embedding_model.to(torch.device(self._device))
-        self._embedding_inference = Inference(embedding_model, window="whole")
-        try:
-            self._embedding_inference.batch_size = self._embedding_batch_size
-        except Exception:  # pragma: no cover - Inferenceの実装差異に対する保険
-            logger.debug("embedding_batch_sizeの設定に失敗しました(無視して続行)")
+        if hasattr(self._pipeline, "embedding_batch_size"):
+            self._pipeline.embedding_batch_size = self._embedding_batch_size
+        logger.info(
+            "話者embeddingはパイプライン内蔵のWeSpeakerを使用します"
+            " (pyannote/embedding は使いません)"
+        )
 
     def diarize_chunk(self, samples: np.ndarray, sample_rate: int) -> list[DiarizedTurn]:
-        """1チャンク分の音声(float32, mono)から発話区間とembeddingを抽出する。"""
+        """1チャンク分の音声(float32, mono)から発話区間とembeddingを抽出する。
+
+        短い発話ごとに別embeddingを取らず、パイプラインが返すローカル話者ごとの
+        代表embeddingを、その話者の全区間へ共有する。
+        """
         if len(samples) == 0:
             return []
 
@@ -142,8 +181,17 @@ class DiarizationEngine:
         assert self._pipeline is not None
 
         with self._lock:
-            waveform = torch.from_numpy(samples).float().unsqueeze(0)
-            diarization = self._pipeline({"waveform": waveform, "sample_rate": sample_rate})
+            waveform = torch.from_numpy(np.ascontiguousarray(samples)).float().unsqueeze(0)
+            output = self._pipeline(
+                {"waveform": waveform, "sample_rate": sample_rate},
+                return_embeddings=True,
+            )
+            if isinstance(output, tuple):
+                diarization, embeddings = output
+            else:
+                diarization, embeddings = output, None
+
+            label_to_embedding = _embeddings_by_label(diarization, embeddings)
 
             turns: list[DiarizedTurn] = []
             for segment, _, label in diarization.itertracks(yield_label=True):
@@ -151,39 +199,58 @@ class DiarizationEngine:
                 end_sample = int(segment.end * sample_rate)
                 if (end_sample - start_sample) < int(_MIN_TURN_SECONDS * sample_rate):
                     continue
-                clip = samples[start_sample:end_sample]
-                embedding = self._extract_embedding(clip, sample_rate)
+                key = str(label)
+                embedding = label_to_embedding.get(key)
                 if embedding is None:
-                    continue
+                    clip = samples[start_sample:end_sample]
+                    embedding = self._extract_clip_embedding(clip, sample_rate)
+                    if embedding is None:
+                        continue
+                    label_to_embedding[key] = embedding
                 turns.append(
                     DiarizedTurn(
                         start_ms=int(segment.start * 1000),
                         end_ms=int(segment.end * 1000),
-                        local_label=str(label),
+                        local_label=key,
                         embedding=embedding,
                     )
                 )
             return turns
 
-    def _extract_embedding(self, clip: np.ndarray, sample_rate: int) -> np.ndarray | None:
-        assert self._embedding_inference is not None
-        waveform = torch.from_numpy(clip).float().unsqueeze(0)
+    def _extract_clip_embedding(self, clip: np.ndarray, sample_rate: int) -> np.ndarray | None:
+        """パイプラインが代表embeddingを返せなかった区間向けのフォールバック。"""
+        if len(clip) < int(_MIN_EMBEDDING_SECONDS * sample_rate):
+            return None
+        embedding_fn = getattr(self._pipeline, "_embedding", None)
+        if embedding_fn is None:
+            return None
+        waveform = torch.from_numpy(np.ascontiguousarray(clip)).float().view(1, 1, -1)
         try:
             with torch.inference_mode():
-                embedding = self._embedding_inference(
-                    {"waveform": waveform, "sample_rate": sample_rate}
-                )
+                embedding = embedding_fn(waveform)
         except Exception:
             logger.exception("embedding抽出に失敗しました。この区間はスキップします")
             return None
-        return np.asarray(embedding, dtype=np.float32).reshape(-1)
+        vec = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        if not np.isfinite(vec).all() or float(np.linalg.norm(vec)) == 0.0:
+            return None
+        return l2_normalize(vec)
 
 
-def _cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
-    denom = float(np.linalg.norm(a) * np.linalg.norm(b))
-    if denom == 0.0:
-        return 1.0
-    return 1.0 - float(np.dot(a, b) / denom)
+def _embeddings_by_label(diarization, embeddings) -> dict[str, np.ndarray]:
+    """annotation.labels() の順に並んだ代表embeddingを、ラベル文字列へ対応付ける。"""
+    mapping: dict[str, np.ndarray] = {}
+    if embeddings is None:
+        return mapping
+    labels = list(diarization.labels())
+    for index, label in enumerate(labels):
+        if index >= len(embeddings):
+            break
+        vec = np.asarray(embeddings[index], dtype=np.float32).reshape(-1)
+        if not np.isfinite(vec).all() or float(np.linalg.norm(vec)) == 0.0:
+            continue
+        mapping[str(label)] = l2_normalize(vec)
+    return mapping
 
 
 class SpeakerRegistry:
@@ -194,7 +261,12 @@ class SpeakerRegistry:
     候補から除外し、統合先のSpeakerのみを比較対象とする。
     """
 
-    def __init__(self, db: Session, meeting_id: int, similarity_threshold: float = 0.45) -> None:
+    def __init__(
+        self,
+        db: Session,
+        meeting_id: int,
+        similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+    ) -> None:
         self._db = db
         self._meeting_id = meeting_id
         self._threshold = similarity_threshold
@@ -213,24 +285,31 @@ class SpeakerRegistry:
 
     def assign(self, embedding: np.ndarray) -> Speaker:
         """embeddingに最も近い既存Speakerへ割り当てる。閾値内に一致がなければ新規発行する。"""
+        embedding = l2_normalize(embedding)
         candidates = self._active_speakers()
         best_speaker: Speaker | None = None
         best_distance = float("inf")
         for speaker in candidates:
             centroid = np.asarray(speaker.embedding_centroid, dtype=np.float32)
-            distance = _cosine_distance(embedding, centroid)
+            distance = cosine_distance(embedding, centroid)
             if distance < best_distance:
                 best_distance = distance
                 best_speaker = speaker
 
         if best_speaker is not None and best_distance <= self._threshold:
-            centroid = np.asarray(best_speaker.embedding_centroid, dtype=np.float32)
+            centroid = l2_normalize(np.asarray(best_speaker.embedding_centroid, dtype=np.float32))
             n = best_speaker.embedding_count
-            new_centroid = (centroid * n + embedding) / (n + 1)
+            new_centroid = l2_normalize((centroid * n + embedding) / (n + 1))
             best_speaker.embedding_centroid = new_centroid.tolist()
             best_speaker.embedding_count = n + 1
             self._db.add(best_speaker)
             self._db.commit()
+            logger.debug(
+                "既存話者に割当: %s distance=%.3f (threshold=%.3f)",
+                best_speaker.label,
+                best_distance,
+                self._threshold,
+            )
             return best_speaker
 
         label = self._next_label()
@@ -244,5 +323,13 @@ class SpeakerRegistry:
         self._db.add(new_speaker)
         self._db.commit()
         self._db.refresh(new_speaker)
-        logger.info("新しい話者を検出しました: %s (meeting_id=%s)", label, self._meeting_id)
+        distance_text = f"{best_distance:.3f}" if best_speaker is not None else "n/a"
+        logger.info(
+            "新しい話者を検出しました: %s (meeting_id=%s, nearest_distance=%s, threshold=%.3f, known=%d)",
+            label,
+            self._meeting_id,
+            distance_text,
+            self._threshold,
+            len(candidates),
+        )
         return new_speaker

@@ -36,7 +36,8 @@ class Settings(BaseSettings):
     minutes_update_interval_seconds: float = 180.0
 
     # Speaker clustering
-    speaker_similarity_threshold: float = 0.45
+    # コサイン距離がこの値以下なら同一話者。0.45だと短い発話で分裂しやすい。
+    speaker_similarity_threshold: float = 0.65
 
     # DB
     database_url: str = f"sqlite:///{(DATA_DIR / 'meeting_ai.db').as_posix()}"

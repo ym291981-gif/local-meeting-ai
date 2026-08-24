@@ -18,14 +18,15 @@ from dataclasses import dataclass, field
 from app.audio.capture import WasapiLoopbackCapture
 from app.audio.chunker import AudioChunk, AudioChunker
 from app.config import Settings
-from app.db.models import Meeting, MeetingStatus, MinutesSnapshot, Utterance
+from app.db.models import Meeting, MeetingStatus, MinutesSnapshot, Participant, Utterance
 from app.db.session import SessionLocal
 from app.pipeline.asr import TranscribedSegment, WhisperTranscriber
 from app.pipeline.diarization import (
     DiarizationEngine,
-    DiarizedTurn,
     SpeakerRegistry,
-    assign_local_labels,
+    resolve_min_speakers,
+    slice_audio,
+    speakers_for_segments,
 )
 from app.pipeline.minutes import MinutesData, MinutesGenerator
 
@@ -34,29 +35,13 @@ logger = logging.getLogger(__name__)
 BroadcastFn = Callable[[int, dict], Awaitable[None]]
 
 
-def _overlap_ms(a_start: int, a_end: int, b_start: int, b_end: int) -> int:
-    return max(0, min(a_end, b_end) - max(a_start, b_start))
-
-
-def _best_overlap_turn(
-    segment: TranscribedSegment, turns: list[DiarizedTurn]
-) -> DiarizedTurn | None:
-    best: DiarizedTurn | None = None
-    best_overlap = 0
-    for turn in turns:
-        overlap = _overlap_ms(segment.start_ms, segment.end_ms, turn.start_ms, turn.end_ms)
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best = turn
-    return best
-
-
 @dataclass
 class _MeetingRuntime:
     meeting_id: int
     stop_event: threading.Event
     thread: threading.Thread
     capture: WasapiLoopbackCapture | None = None
+    min_speakers: int | None = None
     chars_since_minutes_update: int = 0
     last_minutes_update_ts: float = field(default_factory=time.time)
     pending_transcript_buffer: list[str] = field(default_factory=list)
@@ -88,7 +73,7 @@ class PipelineOrchestrator:
     def is_running(self, meeting_id: int) -> bool:
         return meeting_id in self._runtimes
 
-    def start_meeting(self, meeting_id: int) -> None:
+    def start_meeting(self, meeting_id: int, min_speakers: int | None = None) -> None:
         if meeting_id in self._runtimes:
             logger.warning("会議%sは既に開始されています", meeting_id)
             return
@@ -96,7 +81,12 @@ class PipelineOrchestrator:
         thread = threading.Thread(
             target=self._run_meeting_loop, args=(meeting_id, stop_event), daemon=True
         )
-        runtime = _MeetingRuntime(meeting_id=meeting_id, stop_event=stop_event, thread=thread)
+        runtime = _MeetingRuntime(
+            meeting_id=meeting_id,
+            stop_event=stop_event,
+            thread=thread,
+            min_speakers=min_speakers,
+        )
         self._runtimes[meeting_id] = runtime
         thread.start()
 
@@ -161,6 +151,16 @@ class PipelineOrchestrator:
                     logger.exception("会議%sの終了処理(フォールバック)にも失敗しました", meeting_id)
             db.close()
 
+    def _min_speakers_hint(self, db, meeting_id: int, runtime: _MeetingRuntime) -> int | None:
+        participant_count = (
+            db.query(Participant).filter(Participant.meeting_id == meeting_id).count()
+        )
+        return resolve_min_speakers(
+            self._settings.diarization_min_speakers,
+            runtime.min_speakers,
+            participant_count,
+        )
+
     def _process_chunk(
         self, db, meeting_id: int, chunk: AudioChunk, runtime: _MeetingRuntime
     ) -> None:
@@ -175,7 +175,11 @@ class PipelineOrchestrator:
             return
 
         try:
-            turns = self._diarizer.diarize_chunk(chunk.samples, chunk.sample_rate)
+            turns = self._diarizer.diarize_chunk(
+                chunk.samples,
+                chunk.sample_rate,
+                min_speakers=self._min_speakers_hint(db, meeting_id, runtime),
+            )
         except Exception:
             logger.exception("話者分離に失敗しました。話者未割当のまま続行します")
             turns = []
@@ -186,18 +190,29 @@ class PipelineOrchestrator:
         registry = SpeakerRegistry(
             db, meeting_id, similarity_threshold=self._settings.speaker_similarity_threshold
         )
-        local_to_speaker = assign_local_labels(registry, turns)
 
-        for seg in segments:
+        def embed_segment(segment: TranscribedSegment):
+            clip = slice_audio(
+                chunk.samples,
+                chunk.sample_rate,
+                chunk.start_ms,
+                segment.start_ms,
+                segment.end_ms,
+            )
+            return self._diarizer.embed_clip(clip, chunk.sample_rate)
+
+        try:
+            segment_speakers = speakers_for_segments(registry, segments, turns, embed_segment)
+        except Exception:
+            logger.exception("話者割当に失敗しました。話者未割当のまま続行します")
+            segment_speakers = [None] * len(segments)
+
+        for seg, speaker in zip(segments, segment_speakers, strict=True):
             try:
-                best_turn = _best_overlap_turn(seg, turns)
-                speaker_db_id = None
+                speaker_db_id = speaker.id if speaker is not None else None
                 speaker_label = None
-                if best_turn is not None:
-                    speaker = local_to_speaker.get(best_turn.local_label)
-                    if speaker is not None:
-                        speaker_db_id = speaker.id
-                        speaker_label = speaker.display_label or speaker.label
+                if speaker is not None:
+                    speaker_label = speaker.display_label or speaker.label
 
                 utterance = Utterance(
                     meeting_id=meeting_id,

@@ -9,11 +9,15 @@ const Api = {
     return res.json();
   },
 
-  createMeeting(title) {
+  createMeeting(title, minSpeakers) {
+    const body = { title: title || "無題の会議" };
+    if (minSpeakers != null && minSpeakers >= 2) {
+      body.min_speakers = minSpeakers;
+    }
     return fetch("/api/meetings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: title || "無題の会議" }),
+      body: JSON.stringify(body),
     }).then(this._json);
   },
 

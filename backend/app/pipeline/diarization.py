@@ -8,9 +8,10 @@ pyannoteの診断はチャンク単位ではローカルなラベル(SPEAKER_00�
        チャンク内の発話区間を検出し、ローカル話者ごとに1つのembeddingを付ける。
        embeddingはパイプライン内蔵のWeSpeaker(pyannote/wespeaker-voxceleb-resnet34-LM)
        から取得する。短いクリップごとに古いpyannote/embeddingを回さない。
-    2. assign_local_labels() + SpeakerRegistry.assign()
-       チャンク内の同じローカルラベルは1回だけクラスタリングし、得たSpeaker IDを
-       そのラベルの全発話へ使い回す。会議をまたぐ同一性はコサイン距離で判定する。
+    2. assign_turns() / speakers_for_segments() + SpeakerRegistry.assign()
+       チャンク内の同じローカルラベルは原則1回だけクラスタリングする。
+       ただし8秒チャンクではpyannoteが別人を1人にまとめやすいので、
+       ローカル話者が1人しかいない場合はWhisper区間ごとのembeddingで再割当する。
 """
 from __future__ import annotations
 
@@ -123,16 +124,108 @@ def cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
     return 1.0 - similarity
 
 
+def resolve_min_speakers(*values: int | None) -> int | None:
+    """2人以上のヒントだけを pyannote に渡す。1以下・未指定は自動推定。"""
+    hints = [value for value in values if value is not None and value >= 2]
+    return max(hints) if hints else None
+
+
+def assign_turns(registry: SpeakerRegistry, turns: list[DiarizedTurn]) -> list[Speaker]:
+    """各区間へSpeakerを割り当てる。
+
+    同じローカルラベルは原則まとめ、embeddingが大きく違う区間だけ独立に割当する。
+    短いチャンクでpyannoteが別人を同一ラベルにしたケース向け。
+    """
+    assigned: list[Speaker] = []
+    first_of_label: dict[str, Speaker] = {}
+    for turn in turns:
+        first = first_of_label.get(turn.local_label)
+        if first is not None:
+            distance = cosine_distance(
+                turn.embedding, np.asarray(first.embedding_centroid, dtype=np.float32)
+            )
+            if distance <= registry.threshold:
+                assigned.append(first)
+                continue
+            logger.info(
+                "同一ローカル話者%sを分割します: distance=%.3f threshold=%.3f",
+                turn.local_label,
+                distance,
+                registry.threshold,
+            )
+        speaker = registry.assign(turn.embedding)
+        first_of_label.setdefault(turn.local_label, speaker)
+        assigned.append(speaker)
+    return assigned
+
+
 def assign_local_labels(
     registry: SpeakerRegistry, turns: list[DiarizedTurn]
 ) -> dict[str, Speaker]:
     """チャンク内の同じローカルラベルは1回だけ SpeakerRegistry に渡す。"""
+    speakers = assign_turns(registry, turns)
     mapping: dict[str, Speaker] = {}
-    for turn in turns:
-        if turn.local_label in mapping:
-            continue
-        mapping[turn.local_label] = registry.assign(turn.embedding)
+    for turn, speaker in zip(turns, speakers, strict=True):
+        mapping.setdefault(turn.local_label, speaker)
     return mapping
+
+
+def speakers_for_segments(
+    registry: SpeakerRegistry,
+    segments: list,
+    turns: list[DiarizedTurn],
+    embed_segment,
+) -> list[Speaker | None]:
+    """Whisper区間ごとにSpeakerを決める。
+
+    pyannoteが2人以上に分けられていれば区間の重なりで割当する。
+    1人にまとめられている(または失敗している)ときは、文字起こし区間の
+    embeddingで再クラスタリングする。
+    """
+    local_labels = {turn.local_label for turn in turns}
+    if len(local_labels) >= 2:
+        turn_speakers = assign_turns(registry, turns)
+        by_id = {id(turn): speaker for turn, speaker in zip(turns, turn_speakers, strict=True)}
+        result: list[Speaker | None] = []
+        for segment in segments:
+            best = _best_overlap_turn(segment, turns)
+            result.append(by_id.get(id(best)) if best is not None else None)
+        return result
+
+    result = []
+    previous: Speaker | None = None
+    for segment in segments:
+        embedding = embed_segment(segment)
+        if embedding is None:
+            result.append(previous)
+            continue
+        previous = registry.assign(embedding)
+        result.append(previous)
+    return result
+
+
+def _best_overlap_turn(segment, turns: list[DiarizedTurn]) -> DiarizedTurn | None:
+    best: DiarizedTurn | None = None
+    best_overlap = 0
+    for turn in turns:
+        overlap = max(0, min(segment.end_ms, turn.end_ms) - max(segment.start_ms, turn.start_ms))
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best = turn
+    return best
+
+
+def slice_audio(
+    samples: np.ndarray, sample_rate: int, chunk_start_ms: int, start_ms: int, end_ms: int
+) -> np.ndarray:
+    """会議絶対時間の区間を、チャンク音声から切り出す。"""
+    rel_start = (start_ms - chunk_start_ms) / 1000.0
+    rel_end = (end_ms - chunk_start_ms) / 1000.0
+    begin = max(0, int(rel_start * sample_rate))
+    finish = min(len(samples), int(rel_end * sample_rate))
+    if finish <= begin:
+        return samples[0:0]
+    return samples[begin:finish]
 
 
 class DiarizationEngine:
@@ -140,7 +233,7 @@ class DiarizationEngine:
 
     def __init__(
         self,
-        device: str = "cuda",
+        device: str = "cpu",
         hf_token: str = "",
         embedding_batch_size: int = 4,
     ) -> None:
@@ -168,11 +261,17 @@ class DiarizationEngine:
             " (pyannote/embedding は使いません)"
         )
 
-    def diarize_chunk(self, samples: np.ndarray, sample_rate: int) -> list[DiarizedTurn]:
+    def diarize_chunk(
+        self,
+        samples: np.ndarray,
+        sample_rate: int,
+        min_speakers: int | None = None,
+        max_speakers: int | None = None,
+    ) -> list[DiarizedTurn]:
         """1チャンク分の音声(float32, mono)から発話区間とembeddingを抽出する。
 
-        短い発話ごとに別embeddingを取らず、パイプラインが返すローカル話者ごとの
-        代表embeddingを、その話者の全区間へ共有する。
+        ローカル話者の代表embeddingに加え、十分な長さの区間では区間ごとの
+        embeddingも取る。短いチャンクで別人を1ラベルにまとめた場合の再分割用。
         """
         if len(samples) == 0:
             return []
@@ -180,11 +279,17 @@ class DiarizationEngine:
         self._ensure_loaded()
         assert self._pipeline is not None
 
+        pipeline_kwargs: dict = {"return_embeddings": True}
+        if min_speakers is not None and min_speakers >= 2:
+            pipeline_kwargs["min_speakers"] = min_speakers
+        if max_speakers is not None and max_speakers >= 2:
+            pipeline_kwargs["max_speakers"] = max_speakers
+
         with self._lock:
             waveform = torch.from_numpy(np.ascontiguousarray(samples)).float().unsqueeze(0)
             output = self._pipeline(
                 {"waveform": waveform, "sample_rate": sample_rate},
-                return_embeddings=True,
+                **pipeline_kwargs,
             )
             if isinstance(output, tuple):
                 diarization, embeddings = output
@@ -201,11 +306,13 @@ class DiarizationEngine:
                     continue
                 key = str(label)
                 embedding = label_to_embedding.get(key)
-                if embedding is None:
-                    clip = samples[start_sample:end_sample]
-                    embedding = self._extract_clip_embedding(clip, sample_rate)
-                    if embedding is None:
-                        continue
+                clip = samples[start_sample:end_sample]
+                clip_embedding = self._extract_clip_embedding(clip, sample_rate)
+                if clip_embedding is not None:
+                    embedding = clip_embedding
+                elif embedding is None:
+                    continue
+                else:
                     label_to_embedding[key] = embedding
                 turns.append(
                     DiarizedTurn(
@@ -215,7 +322,21 @@ class DiarizationEngine:
                         embedding=embedding,
                     )
                 )
+            local_labels = sorted({turn.local_label for turn in turns})
+            logger.info(
+                "話者分離結果: duration=%.1fs local_speakers=%s turns=%d min_speakers=%s",
+                len(samples) / sample_rate,
+                local_labels or ["(none)"],
+                len(turns),
+                min_speakers,
+            )
             return turns
+
+    def embed_clip(self, clip: np.ndarray, sample_rate: int) -> np.ndarray | None:
+        """区間音声から話者embeddingを取る。短い区間はNone。"""
+        self._ensure_loaded()
+        with self._lock:
+            return self._extract_clip_embedding(clip, sample_rate)
 
     def _extract_clip_embedding(self, clip: np.ndarray, sample_rate: int) -> np.ndarray | None:
         """パイプラインが代表embeddingを返せなかった区間向けのフォールバック。"""
@@ -270,6 +391,10 @@ class SpeakerRegistry:
         self._db = db
         self._meeting_id = meeting_id
         self._threshold = similarity_threshold
+
+    @property
+    def threshold(self) -> float:
+        return self._threshold
 
     def _active_speakers(self) -> list[Speaker]:
         speakers = (

@@ -26,8 +26,9 @@ from app.db.models import Base, Meeting, Speaker  # noqa: E402
 from app.pipeline.diarization import (  # noqa: E402
     DiarizationEngine,
     SpeakerRegistry,
-    assign_local_labels,
+    assign_turns,
     cosine_distance,
+    resolve_min_speakers,
 )
 
 
@@ -46,9 +47,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="話者クラスタリング診断")
     parser.add_argument("--wav", required=True, help="診断するWAVファイル")
     parser.add_argument("--chunk-seconds", type=float, default=8.0)
+    parser.add_argument("--min-speakers", type=int, default=None)
     args = parser.parse_args()
 
     settings = get_settings()
+    min_speakers = resolve_min_speakers(
+        args.min_speakers, settings.diarization_min_speakers
+    )
     samples = load_wav_mono16k(Path(args.wav))
     sample_rate = 16000
     chunk_len = int(args.chunk_seconds * sample_rate)
@@ -75,7 +80,8 @@ def main() -> None:
     print(f"threshold={settings.speaker_similarity_threshold}")
     print(
         f"device={settings.diarization_device}  "
-        f"duration={len(samples) / sample_rate:.1f}s"
+        f"duration={len(samples) / sample_rate:.1f}s  "
+        f"min_speakers={min_speakers}"
     )
     print()
 
@@ -83,10 +89,10 @@ def main() -> None:
         chunk = samples[start : start + chunk_len]
         if len(chunk) < sample_rate // 2:
             continue
-        turns = engine.diarize_chunk(chunk, sample_rate)
+        turns = engine.diarize_chunk(chunk, sample_rate, min_speakers=min_speakers)
         local_labels = sorted({turn.local_label for turn in turns})
-        mapping = assign_local_labels(registry, turns)
-        global_labels = sorted({speaker.label for speaker in mapping.values()})
+        assigned = assign_turns(registry, turns)
+        global_labels = sorted({speaker.label for speaker in assigned})
         print(
             f"chunk {index:02d}  {len(chunk) / sample_rate:4.1f}s  "
             f"local={local_labels or ['(none)']}  "

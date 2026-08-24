@@ -11,6 +11,7 @@
   <h1>リアルタイムAI議事録・文書活用支援ツール</h1>
   <div class="meeting-controls">
     <input id="meeting-title-input" type="text" placeholder="会議名(例: 定例会議)" />
+    <input id="speaker-count-input" type="number" min="2" max="15" placeholder="話者数(任意)" title="分かっている人数。空欄なら自動推定します。短い動画や自己紹介の連続で話者が混ざるときに指定すると精度が上がります。" />
     <button id="start-meeting-btn" class="btn btn-primary">会議を開始</button>
     <button id="stop-meeting-btn" class="btn btn-danger" disabled>会議を終了</button>
     <span id="meeting-status" class="meeting-status">会議は開始していません</span>

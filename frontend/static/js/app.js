@@ -22,9 +22,11 @@ const App = {
 
   async startMeeting() {
     const title = document.getElementById("meeting-title-input").value.trim();
+    const rawCount = document.getElementById("speaker-count-input").value;
+    const minSpeakers = rawCount === "" ? null : Number(rawCount);
     this._setStatus("会議を開始しています...");
     try {
-      const meeting = await Api.createMeeting(title);
+      const meeting = await Api.createMeeting(title, minSpeakers);
       this.state.meetingId = meeting.id;
 
       Transcript.reset();

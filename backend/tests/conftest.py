@@ -26,9 +26,11 @@ class FakeOrchestrator:
     def __init__(self) -> None:
         self.started: list[int] = []
         self.stopped: list[int] = []
+        self.min_speakers_args: list[int | None] = []
 
-    def start_meeting(self, meeting_id: int) -> None:
+    def start_meeting(self, meeting_id: int, min_speakers: int | None = None) -> None:
         self.started.append(meeting_id)
+        self.min_speakers_args.append(min_speakers)
 
     def stop_meeting(self, meeting_id: int, timeout: float = 60.0) -> None:
         self.stopped.append(meeting_id)

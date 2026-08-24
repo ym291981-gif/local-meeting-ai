@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict
 
 class MeetingCreate(BaseModel):
     title: str = "無題の会議"
+    min_speakers: int | None = None
 
 
 class MeetingOut(BaseModel):

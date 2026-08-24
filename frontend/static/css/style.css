@@ -50,6 +50,13 @@ body {
   min-width: 200px;
 }
 
+.meeting-controls input[type="number"] {
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  width: 128px;
+}
+
 .meeting-status {
   font-size: 13px;
   color: var(--color-muted);

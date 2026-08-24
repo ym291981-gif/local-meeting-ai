@@ -26,7 +26,7 @@ async def create_and_start_meeting(
     db.commit()
     db.refresh(meeting)
 
-    orchestrator.start_meeting(meeting.id)
+    orchestrator.start_meeting(meeting.id, min_speakers=payload.min_speakers)
     return meeting
 
 

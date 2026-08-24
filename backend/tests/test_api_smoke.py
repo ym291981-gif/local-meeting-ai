@@ -19,6 +19,12 @@ def test_create_and_list_meetings(client):
     assert any(m["id"] == meeting["id"] for m in resp.json())
 
 
+def test_create_meeting_passes_min_speakers(client):
+    resp = client.post("/api/meetings", json={"title": "3人会議", "min_speakers": 3})
+    assert resp.status_code == 200
+    assert client.fake_orchestrator.min_speakers_args == [3]
+
+
 def test_stop_meeting_calls_orchestrator(client):
     meeting = client.post("/api/meetings", json={"title": "終了テスト"}).json()
 

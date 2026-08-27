@@ -71,7 +71,7 @@ class WhisperTranscriber:
                 samples,
                 language=self._language,
                 vad_filter=True,
-                beam_size=5,
+                beam_size=2,
             )
             results: list[TranscribedSegment] = []
             for seg in segments:

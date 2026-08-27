@@ -4,12 +4,17 @@ const Minutes = {
   _viewEl: null,
   _formEl: null,
   _editBtn: null,
+  _copyBtn: null,
 
   init() {
     this._viewEl = document.getElementById("minutes-view");
     this._formEl = document.getElementById("minutes-edit-form");
     this._editBtn = document.getElementById("edit-minutes-btn");
+    this._copyBtn = document.getElementById("copy-minutes-btn");
     this._editBtn.addEventListener("click", () => this._toggleEdit());
+    this._copyBtn.addEventListener("click", () => {
+      copyToClipboard(this.toPlainText(), this._copyBtn);
+    });
   },
 
   reset() {
@@ -18,6 +23,7 @@ const Minutes = {
     this._formEl.hidden = true;
     this._formEl.innerHTML = "";
     this._editBtn.disabled = true;
+    this._copyBtn.disabled = true;
   },
 
   render(data) {
@@ -53,6 +59,34 @@ const Minutes = {
 
     this._viewEl.innerHTML =
       html || '<p class="empty-hint">議事録の内容はまだありません。</p>';
+    this._copyBtn.disabled = !this.toPlainText();
+  },
+
+  toPlainText() {
+    const data = this._current;
+    if (!data) return "";
+    const lines = [];
+    const addSection = (title, items, mapper) => {
+      if (!items || items.length === 0) return;
+      lines.push(title);
+      items.forEach((item) => {
+        const text = mapper(item);
+        if (text) lines.push(`- ${text}`);
+      });
+      lines.push("");
+    };
+    addSection("議題", data.topics, (t) => t.title);
+    addSection("決定事項", data.decisions, (d) => d.text);
+    addSection("ToDo", data.todos, (t) => {
+      const bits = [t.task];
+      if (t.owner) bits.push(`担当: ${t.owner}`);
+      if (t.deadline) bits.push(`期限: ${t.deadline}`);
+      return bits.join(" / ");
+    });
+    addSection("保留事項", data.pending_items, (p) => p.text);
+    addSection("確認事項", data.confirmations, (c) => c.text);
+    addSection("前回からの変更事項", data.changes_from_previous, (c) => c.text);
+    return lines.join("\n").trim();
   },
 
   _escape(text) {

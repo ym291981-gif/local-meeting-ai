@@ -13,7 +13,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.db.models import Meeting  # noqa: E402
+from app.db.models import Meeting, Speaker  # noqa: E402
 from app.pipeline.diarization import (  # noqa: E402
     DiarizedTurn,
     SpeakerRegistry,
@@ -21,6 +21,7 @@ from app.pipeline.diarization import (  # noqa: E402
     assign_turns,
     cosine_distance,
     l2_normalize,
+    resolve_max_speakers,
     resolve_min_speakers,
     slice_audio,
     speakers_for_segments,
@@ -135,6 +136,31 @@ def test_resolve_min_speakers_ignores_one_or_none():
     assert resolve_min_speakers(1, 3, 2) == 3
 
 
+def test_resolve_max_speakers_uses_largest_hint_of_two_or_more():
+    assert resolve_max_speakers(None, 1, 0) is None
+    assert resolve_max_speakers(1, 4, 2) == 4
+    assert resolve_max_speakers(8) == 8
+
+
+def test_registry_caps_new_speakers_at_max(test_db):
+    meeting_id = _make_meeting(test_db)
+    db = test_db()
+    registry = SpeakerRegistry(db, meeting_id, similarity_threshold=0.3, max_speakers=2)
+
+    speaker1 = registry.assign(np.array([1.0, 0.0, 0.0], dtype=np.float32))
+    speaker2 = registry.assign(np.array([0.0, 1.0, 0.0], dtype=np.float32))
+    speaker3 = registry.assign(np.array([0.0, 0.0, 1.0], dtype=np.float32))
+
+    assert speaker1.id != speaker2.id
+    assert speaker3.id in {speaker1.id, speaker2.id}
+    count = (
+        db.query(Speaker)
+        .filter(Speaker.meeting_id == meeting_id, Speaker.merged_into_id.is_(None))
+        .count()
+    )
+    assert count == 2
+
+
 def test_assign_turns_splits_same_local_label_when_embeddings_differ(test_db):
     meeting_id = _make_meeting(test_db)
     db = test_db()
@@ -223,6 +249,37 @@ def test_speakers_for_segments_uses_overlap_when_multiple_local_labels(test_db):
     assert speakers[0].label == "speaker_01"
     assert speakers[1].label == "speaker_02"
     assert speakers[0].id != speakers[1].id
+
+
+def test_speakers_for_segments_skips_non_overlapping_turns(test_db):
+    meeting_id = _make_meeting(test_db)
+    db = test_db()
+    registry = SpeakerRegistry(db, meeting_id, similarity_threshold=0.3)
+    turns = [
+        DiarizedTurn(
+            start_ms=0,
+            end_ms=400,
+            local_label="SPEAKER_00",
+            embedding=np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        ),
+        DiarizedTurn(
+            start_ms=2000,
+            end_ms=4000,
+            local_label="SPEAKER_01",
+            embedding=np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        ),
+    ]
+
+    class _Seg:
+        def __init__(self, start_ms: int, end_ms: int) -> None:
+            self.start_ms = start_ms
+            self.end_ms = end_ms
+
+    speakers = speakers_for_segments(registry, [_Seg(2100, 3900)], turns, lambda _seg: None)
+
+    assert speakers[0].label == "speaker_01"
+    count = db.query(Speaker).filter(Speaker.meeting_id == meeting_id).count()
+    assert count == 1
 
 
 def test_slice_audio_uses_absolute_timestamps():

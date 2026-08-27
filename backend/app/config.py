@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     diarization_device: str = "cpu"
     hf_token: str = ""
     diarization_embedding_batch_size: int = 4
+    # 会議全体の話者上限ヒント。1以下は未指定(自動推定)。チャンクごとの下限ではない。
     diarization_min_speakers: int = 1
 
     # Ollama
@@ -41,8 +42,8 @@ class Settings(BaseSettings):
     audio_target_sample_rate: int = 16000
 
     # Minutes
-    minutes_update_char_threshold: int = 800
-    minutes_update_interval_seconds: float = 180.0
+    minutes_update_char_threshold: int = 300
+    minutes_update_interval_seconds: float = 60.0
 
     # Speaker clustering
     # コサイン距離がこの値以下なら同一話者。0.45だと短い発話で分裂しやすい。

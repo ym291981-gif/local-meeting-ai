@@ -11,7 +11,7 @@
   <h1>リアルタイムAI議事録・文書活用支援ツール</h1>
   <div class="meeting-controls">
     <input id="meeting-title-input" type="text" placeholder="会議名(例: 定例会議)" />
-    <input id="speaker-count-input" type="number" min="2" max="15" placeholder="話者数(任意)" title="分かっている人数。空欄なら自動推定します。短い動画や自己紹介の連続で話者が混ざるときに指定すると精度が上がります。" />
+    <input id="speaker-count-input" type="number" min="2" max="15" placeholder="話者数(任意)" title="会議全体の人数（上限）。各瞬間の人数ではありません。空欄なら自動推定します。" />
     <button id="start-meeting-btn" class="btn btn-primary">会議を開始</button>
     <button id="stop-meeting-btn" class="btn btn-danger" disabled>会議を終了</button>
     <span id="meeting-status" class="meeting-status">会議は開始していません</span>
@@ -19,34 +19,40 @@
 </header>
 
 <main class="app-main">
-  <section class="panel transcript-panel">
-    <h2>会議全文記録(文字起こし)</h2>
-    <p class="panel-hint">Whisperによる準リアルタイム文字起こし。発言をクリックすると内容や話者を修正できます。</p>
-    <div id="transcript-list" class="transcript-list"></div>
+  <section class="panel minutes-panel">
+    <div class="panel-title-row">
+      <h2>議事録</h2>
+      <div class="panel-actions">
+        <button id="copy-minutes-btn" class="btn btn-small" disabled>コピー</button>
+        <button id="edit-minutes-btn" class="btn btn-small" disabled>修正する</button>
+      </div>
+    </div>
+    <p class="panel-hint">Qwen3が整理した議事録です。会議中でも確認・修正できます。終了後はコピーして残しておけます。</p>
+    <div id="minutes-view" class="minutes-view">
+      <p class="empty-hint">まだ議事録は生成されていません。</p>
+    </div>
+    <div id="minutes-edit-form" class="minutes-edit-form" hidden></div>
   </section>
 
   <aside class="side-column">
-    <section class="panel minutes-panel">
+    <section class="panel transcript-panel">
       <div class="panel-title-row">
-        <h2>議事録</h2>
-        <button id="edit-minutes-btn" class="btn btn-small" disabled>修正する</button>
+        <h2>会議全文記録(文字起こし)</h2>
+        <button id="copy-transcript-btn" class="btn btn-small" disabled>コピー</button>
       </div>
-      <p class="panel-hint">Qwen3が整理した議事録です。会議中でも確認・修正できます。</p>
-      <div id="minutes-view" class="minutes-view">
-        <p class="empty-hint">まだ議事録は生成されていません。</p>
-      </div>
-      <div id="minutes-edit-form" class="minutes-edit-form" hidden></div>
+      <p class="panel-hint">Whisperによる準リアルタイム文字起こし。発言をクリックすると内容や話者を修正できます。終了後はコピーして残しておけます。</p>
+      <div id="transcript-list" class="transcript-list"></div>
     </section>
 
     <section class="panel speakers-panel">
       <h2>話者</h2>
-      <p class="panel-hint">AIが分けた話者(speaker_01等)へ参加者名を割り当てたり、統合したりできます。</p>
+      <p class="panel-hint">AIが分けた話者へ、参加者一覧から選んで割り当てるか、名前を入力できます。同じ人は統合できます。</p>
       <div id="speakers-list" class="speakers-list"></div>
     </section>
 
     <section class="panel participants-panel">
       <h2>参加者一覧</h2>
-      <p class="panel-hint">発言しない参加者も手動で登録できます。</p>
+      <p class="panel-hint">先に名前を入れておくと、話者への割当でプルダウンから選べます。発言しない人も登録できます。</p>
       <div class="participant-add-row">
         <input id="participant-name-input" type="text" placeholder="参加者名" />
         <button id="add-participant-btn" class="btn btn-small">追加</button>

@@ -28,7 +28,7 @@ from app.pipeline.diarization import (  # noqa: E402
     SpeakerRegistry,
     assign_turns,
     cosine_distance,
-    resolve_min_speakers,
+    resolve_max_speakers,
 )
 
 
@@ -47,12 +47,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="話者クラスタリング診断")
     parser.add_argument("--wav", required=True, help="診断するWAVファイル")
     parser.add_argument("--chunk-seconds", type=float, default=8.0)
-    parser.add_argument("--min-speakers", type=int, default=None)
+    parser.add_argument("--max-speakers", "--min-speakers", type=int, default=None)
     args = parser.parse_args()
 
     settings = get_settings()
-    min_speakers = resolve_min_speakers(
-        args.min_speakers, settings.diarization_min_speakers
+    max_speakers = resolve_max_speakers(
+        args.max_speakers, settings.diarization_min_speakers
     )
     samples = load_wav_mono16k(Path(args.wav))
     sample_rate = 16000
@@ -74,14 +74,17 @@ def main() -> None:
     db.refresh(meeting)
 
     registry = SpeakerRegistry(
-        db, meeting.id, similarity_threshold=settings.speaker_similarity_threshold
+        db,
+        meeting.id,
+        similarity_threshold=settings.speaker_similarity_threshold,
+        max_speakers=max_speakers,
     )
 
     print(f"threshold={settings.speaker_similarity_threshold}")
     print(
         f"device={settings.diarization_device}  "
         f"duration={len(samples) / sample_rate:.1f}s  "
-        f"min_speakers={min_speakers}"
+        f"max_speakers={max_speakers}"
     )
     print()
 
@@ -89,7 +92,7 @@ def main() -> None:
         chunk = samples[start : start + chunk_len]
         if len(chunk) < sample_rate // 2:
             continue
-        turns = engine.diarize_chunk(chunk, sample_rate, min_speakers=min_speakers)
+        turns = engine.diarize_chunk(chunk, sample_rate, max_speakers=max_speakers)
         local_labels = sorted({turn.local_label for turn in turns})
         assigned = assign_turns(registry, turns)
         global_labels = sorted({speaker.label for speaker in assigned})

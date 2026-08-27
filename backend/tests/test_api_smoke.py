@@ -148,3 +148,36 @@ def test_minutes_edit_flow(client):
     assert resp.status_code == 200
     assert resp.json()["decisions"][0]["text"] == "納期を8月27日に変更する"
     assert resp.json()["is_manually_edited"] is True
+
+
+def test_utterance_ws_payload_includes_raw_text(test_db):
+    from unittest.mock import MagicMock
+
+    from app.config import Settings
+    from app.db.models import Meeting, Utterance
+    from app.pipeline.orchestrator import PipelineOrchestrator
+
+    db = test_db()
+    meeting = Meeting(title="ws")
+    db.add(meeting)
+    db.commit()
+    db.refresh(meeting)
+    utterance = Utterance(
+        meeting_id=meeting.id, start_ms=0, end_ms=1000, raw_text="こんにちは"
+    )
+    db.add(utterance)
+    db.commit()
+    db.refresh(utterance)
+
+    orch = PipelineOrchestrator(
+        settings=Settings(),
+        transcriber=MagicMock(),
+        diarizer=MagicMock(),
+        minutes_generator=MagicMock(),
+        broadcast=MagicMock(),
+    )
+    payload = orch._utterance_message(utterance, speaker_label="speaker_01")["utterance"]
+    assert payload["raw_text"] == "こんにちは"
+    assert payload["effective_text"] == "こんにちは"
+    assert payload["text"] == "こんにちは"
+    assert payload["speaker_label"] == "speaker_01"

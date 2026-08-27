@@ -124,10 +124,15 @@ def cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
     return 1.0 - similarity
 
 
-def resolve_min_speakers(*values: int | None) -> int | None:
-    """2人以上のヒントだけを pyannote に渡す。1以下・未指定は自動推定。"""
+def resolve_max_speakers(*values: int | None) -> int | None:
+    """2人以上のヒントだけを会議全体の話者上限として使う。1以下・未指定は自動推定。"""
     hints = [value for value in values if value is not None and value >= 2]
     return max(hints) if hints else None
+
+
+def resolve_min_speakers(*values: int | None) -> int | None:
+    """互換用エイリアス。会議全体の話者上限を返す。"""
+    return resolve_max_speakers(*values)
 
 
 def assign_turns(registry: SpeakerRegistry, turns: list[DiarizedTurn]) -> list[Speaker]:
@@ -179,13 +184,28 @@ def speakers_for_segments(
     """Whisper区間ごとにSpeakerを決める。
 
     pyannoteが2人以上に分けられていれば区間の重なりで割当する。
+    文字起こしと重ならない区間(ノイズ・BGM等)には Speaker 行を作らない。
     1人にまとめられている(または失敗している)ときは、文字起こし区間の
     embeddingで再クラスタリングする。
     """
     local_labels = {turn.local_label for turn in turns}
     if len(local_labels) >= 2:
-        turn_speakers = assign_turns(registry, turns)
-        by_id = {id(turn): speaker for turn, speaker in zip(turns, turn_speakers, strict=True)}
+        overlapping: list[DiarizedTurn] = []
+        seen: set[int] = set()
+        for segment in segments:
+            best = _best_overlap_turn(segment, turns)
+            if best is None:
+                continue
+            key = id(best)
+            if key in seen:
+                continue
+            seen.add(key)
+            overlapping.append(best)
+        turn_speakers = assign_turns(registry, overlapping) if overlapping else []
+        by_id = {
+            id(turn): speaker
+            for turn, speaker in zip(overlapping, turn_speakers, strict=True)
+        }
         result: list[Speaker | None] = []
         for segment in segments:
             best = _best_overlap_turn(segment, turns)
@@ -324,11 +344,13 @@ class DiarizationEngine:
                 )
             local_labels = sorted({turn.local_label for turn in turns})
             logger.info(
-                "話者分離結果: duration=%.1fs local_speakers=%s turns=%d min_speakers=%s",
+                "話者分離結果: duration=%.1fs local_speakers=%s turns=%d "
+                "min_speakers=%s max_speakers=%s",
                 len(samples) / sample_rate,
                 local_labels or ["(none)"],
                 len(turns),
                 min_speakers,
+                max_speakers,
             )
             return turns
 
@@ -387,10 +409,12 @@ class SpeakerRegistry:
         db: Session,
         meeting_id: int,
         similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+        max_speakers: int | None = None,
     ) -> None:
         self._db = db
         self._meeting_id = meeting_id
         self._threshold = similarity_threshold
+        self._max_speakers = max_speakers if max_speakers is not None and max_speakers >= 2 else None
 
     @property
     def threshold(self) -> float:
@@ -408,8 +432,24 @@ class SpeakerRegistry:
         count = self._db.query(Speaker).filter(Speaker.meeting_id == self._meeting_id).count()
         return f"speaker_{count + 1:02d}"
 
+    def _at_capacity(self, candidate_count: int) -> bool:
+        return self._max_speakers is not None and candidate_count >= self._max_speakers
+
+    def _bind_to_speaker(self, speaker: Speaker, embedding: np.ndarray) -> Speaker:
+        centroid = l2_normalize(np.asarray(speaker.embedding_centroid, dtype=np.float32))
+        n = speaker.embedding_count
+        new_centroid = l2_normalize((centroid * n + embedding) / (n + 1))
+        speaker.embedding_centroid = new_centroid.tolist()
+        speaker.embedding_count = n + 1
+        self._db.add(speaker)
+        self._db.commit()
+        return speaker
+
     def assign(self, embedding: np.ndarray) -> Speaker:
-        """embeddingに最も近い既存Speakerへ割り当てる。閾値内に一致がなければ新規発行する。"""
+        """embeddingに最も近い既存Speakerへ割り当てる。閾値内に一致がなければ新規発行する。
+
+        会議全体の話者上限に達しているときは、距離が閾値を超えていても最近傍へ割当する。
+        """
         embedding = l2_normalize(embedding)
         candidates = self._active_speakers()
         best_speaker: Speaker | None = None
@@ -421,21 +461,24 @@ class SpeakerRegistry:
                 best_distance = distance
                 best_speaker = speaker
 
-        if best_speaker is not None and best_distance <= self._threshold:
-            centroid = l2_normalize(np.asarray(best_speaker.embedding_centroid, dtype=np.float32))
-            n = best_speaker.embedding_count
-            new_centroid = l2_normalize((centroid * n + embedding) / (n + 1))
-            best_speaker.embedding_centroid = new_centroid.tolist()
-            best_speaker.embedding_count = n + 1
-            self._db.add(best_speaker)
-            self._db.commit()
-            logger.debug(
-                "既存話者に割当: %s distance=%.3f (threshold=%.3f)",
-                best_speaker.label,
-                best_distance,
-                self._threshold,
-            )
-            return best_speaker
+        at_cap = self._at_capacity(len(candidates))
+        if best_speaker is not None and (best_distance <= self._threshold or at_cap):
+            if at_cap and best_distance > self._threshold:
+                logger.info(
+                    "話者上限(%s)に達したため最近傍へ割当: %s distance=%.3f (threshold=%.3f)",
+                    self._max_speakers,
+                    best_speaker.label,
+                    best_distance,
+                    self._threshold,
+                )
+            else:
+                logger.debug(
+                    "既存話者に割当: %s distance=%.3f (threshold=%.3f)",
+                    best_speaker.label,
+                    best_distance,
+                    self._threshold,
+                )
+            return self._bind_to_speaker(best_speaker, embedding)
 
         label = self._next_label()
         new_speaker = Speaker(
@@ -450,11 +493,13 @@ class SpeakerRegistry:
         self._db.refresh(new_speaker)
         distance_text = f"{best_distance:.3f}" if best_speaker is not None else "n/a"
         logger.info(
-            "新しい話者を検出しました: %s (meeting_id=%s, nearest_distance=%s, threshold=%.3f, known=%d)",
+            "新しい話者を検出しました: %s (meeting_id=%s, nearest_distance=%s, "
+            "threshold=%.3f, known=%d, max_speakers=%s)",
             label,
             self._meeting_id,
             distance_text,
             self._threshold,
             len(candidates),
+            self._max_speakers,
         )
         return new_speaker

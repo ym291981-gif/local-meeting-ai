@@ -8,6 +8,14 @@
   --color-text: #1f2430;
   --color-muted: #6b7280;
   --radius: 10px;
+  --speaker-1: #2563eb;
+  --speaker-2: #dc2626;
+  --speaker-3: #059669;
+  --speaker-4: #d97706;
+  --speaker-5: #7c3aed;
+  --speaker-6: #db2777;
+  --speaker-7: #0f766e;
+  --speaker-8: #4f46e5;
 }
 
 * {
@@ -100,7 +108,7 @@ body {
 
 .app-main {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+  grid-template-columns: minmax(0, 3fr) minmax(320px, 2fr);
   gap: 16px;
   padding: 16px 24px;
   align-items: start;
@@ -128,6 +136,13 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
+}
+
+.panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .panel-hint {
@@ -136,20 +151,31 @@ body {
   margin: 0 0 12px;
 }
 
+.minutes-panel {
+  min-height: 70vh;
+}
+
+.minutes-view {
+  max-height: calc(70vh - 72px);
+  overflow-y: auto;
+}
+
 .transcript-panel {
-  min-height: 60vh;
+  min-height: unset;
 }
 
 .transcript-list {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-height: 70vh;
+  max-height: 40vh;
   overflow-y: auto;
 }
 
 .utterance-row {
   border: 1px solid var(--color-border);
+  border-left-width: 4px;
+  border-left-color: var(--speaker-accent, var(--color-border));
   border-radius: var(--radius);
   padding: 8px 12px;
   cursor: pointer;
@@ -169,8 +195,17 @@ body {
 
 .utterance-speaker {
   font-weight: 700;
-  color: var(--color-primary);
+  color: var(--speaker-accent, var(--color-primary));
 }
+
+.speaker-color-1 { --speaker-accent: var(--speaker-1); }
+.speaker-color-2 { --speaker-accent: var(--speaker-2); }
+.speaker-color-3 { --speaker-accent: var(--speaker-3); }
+.speaker-color-4 { --speaker-accent: var(--speaker-4); }
+.speaker-color-5 { --speaker-accent: var(--speaker-5); }
+.speaker-color-6 { --speaker-accent: var(--speaker-6); }
+.speaker-color-7 { --speaker-accent: var(--speaker-7); }
+.speaker-color-8 { --speaker-accent: var(--speaker-8); }
 
 .utterance-text {
   font-size: 14px;
@@ -242,6 +277,7 @@ body {
 .speaker-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   font-size: 13px;
 }
@@ -249,6 +285,7 @@ body {
 .speaker-row .speaker-label {
   font-weight: 700;
   min-width: 70px;
+  color: var(--speaker-accent, var(--color-text));
 }
 
 .speaker-row input,

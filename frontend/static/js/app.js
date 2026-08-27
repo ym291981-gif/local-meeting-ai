@@ -2,6 +2,7 @@
 const App = {
   state: {
     meetingId: null,
+    isRunning: false,
     ws: null,
     speakerRefreshTimer: null,
   },
@@ -28,11 +29,12 @@ const App = {
     try {
       const meeting = await Api.createMeeting(title, minSpeakers);
       this.state.meetingId = meeting.id;
+      await Participants.commitPending(meeting.id);
+      this.state.isRunning = true;
 
       Transcript.reset();
       Minutes.reset();
       Speakers.reset();
-      Participants.reset();
 
       document.getElementById("start-meeting-btn").disabled = true;
       document.getElementById("stop-meeting-btn").disabled = false;
@@ -77,6 +79,9 @@ const App = {
       Transcript.setAll(transcript);
       if (minutes) Minutes.render(minutes);
       await Speakers.refresh();
+
+      this.state.isRunning = false;
+      Participants.prepareNextMeeting();
 
       this._setStatus(`会議は終了しました(ID: ${this.state.meetingId})`);
       document.getElementById("start-meeting-btn").disabled = false;

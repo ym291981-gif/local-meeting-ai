@@ -1,4 +1,4 @@
-// 議事録パネルの表示・修正を担当する(要件定義書 第23〜26章)。
+// まとめパネルの表示・修正を担当する(柔軟セクション形式)。
 const Minutes = {
   _current: null,
   _viewEl: null,
@@ -19,11 +19,35 @@ const Minutes = {
 
   reset() {
     this._current = null;
-    this._viewEl.innerHTML = '<p class="empty-hint">まだ議事録は生成されていません。</p>';
+    this._viewEl.innerHTML = '<p class="empty-hint">まだまとめは生成されていません。</p>';
     this._formEl.hidden = true;
     this._formEl.innerHTML = "";
     this._editBtn.disabled = true;
     this._copyBtn.disabled = true;
+  },
+
+  _sectionsOf(data) {
+    if (!data) return [];
+    return Array.isArray(data.sections) ? data.sections : [];
+  },
+
+  _itemLabel(item) {
+    if (!item) return "";
+    const bits = [item.text || ""];
+    if (item.owner) bits.push(`担当: ${item.owner}`);
+    if (item.deadline) bits.push(`期限: ${item.deadline}`);
+    return bits.filter(Boolean).join(" / ");
+  },
+
+  _renderItemHtml(item) {
+    const text = this._escape(item.text || "");
+    const extras = [];
+    if (item.owner) extras.push(`<span class="todo-owner">担当: ${this._escape(item.owner)}</span>`);
+    if (item.deadline) {
+      extras.push(`<span class="todo-deadline">期限: ${this._escape(item.deadline)}</span>`);
+    }
+    if (extras.length === 0) return text;
+    return `<div class="todo-item"><span>${text}</span>${extras.join("")}</div>`;
   },
 
   render(data) {
@@ -31,61 +55,38 @@ const Minutes = {
     this._editBtn.disabled = false;
     this._formEl.hidden = true;
 
-    const section = (title, items, renderItem) => {
-      if (!items || items.length === 0) return "";
-      const lis = items.map((item) => `<li>${renderItem(item)}</li>`).join("");
-      return `<section><h3>${title}</h3><ul>${lis}</ul></section>`;
-    };
-
-    const html = [
-      data.is_final ? '<p class="empty-hint">(会議終了 最終議事録)</p>' : "",
-      section("議題", data.topics, (t) => this._escape(t.title)),
-      section("決定事項", data.decisions, (d) => this._escape(d.text)),
-      section(
-        "ToDo",
-        data.todos,
-        (t) =>
-          `<div class="todo-item"><span>${this._escape(t.task)}</span>` +
-          (t.owner ? `<span class="todo-owner">担当: ${this._escape(t.owner)}</span>` : "") +
-          (t.deadline ? `<span class="todo-deadline">期限: ${this._escape(t.deadline)}</span>` : "") +
-          `</div>`
-      ),
-      section("保留事項", data.pending_items, (p) => this._escape(p.text)),
-      section("確認事項", data.confirmations, (c) => this._escape(c.text)),
-      section("前回からの変更事項", data.changes_from_previous, (c) => this._escape(c.text)),
-    ]
-      .filter(Boolean)
-      .join("");
+    const sections = this._sectionsOf(data);
+    const parts = [];
+    if (data && data.is_final) {
+      parts.push('<p class="empty-hint">(終了 最終まとめ)</p>');
+    }
+    sections.forEach((section) => {
+      const items = Array.isArray(section.items) ? section.items : [];
+      if (!section.title || items.length === 0) return;
+      const lis = items.map((item) => `<li>${this._renderItemHtml(item)}</li>`).join("");
+      parts.push(
+        `<section><h3>${this._escape(section.title)}</h3><ul>${lis}</ul></section>`
+      );
+    });
 
     this._viewEl.innerHTML =
-      html || '<p class="empty-hint">議事録の内容はまだありません。</p>';
+      parts.join("") || '<p class="empty-hint">まとめの内容はまだありません。</p>';
     this._copyBtn.disabled = !this.toPlainText();
   },
 
   toPlainText() {
-    const data = this._current;
-    if (!data) return "";
+    const sections = this._sectionsOf(this._current);
     const lines = [];
-    const addSection = (title, items, mapper) => {
-      if (!items || items.length === 0) return;
-      lines.push(title);
+    sections.forEach((section) => {
+      const items = Array.isArray(section.items) ? section.items : [];
+      if (!section.title || items.length === 0) return;
+      lines.push(section.title);
       items.forEach((item) => {
-        const text = mapper(item);
+        const text = this._itemLabel(item);
         if (text) lines.push(`- ${text}`);
       });
       lines.push("");
-    };
-    addSection("議題", data.topics, (t) => t.title);
-    addSection("決定事項", data.decisions, (d) => d.text);
-    addSection("ToDo", data.todos, (t) => {
-      const bits = [t.task];
-      if (t.owner) bits.push(`担当: ${t.owner}`);
-      if (t.deadline) bits.push(`期限: ${t.deadline}`);
-      return bits.join(" / ");
     });
-    addSection("保留事項", data.pending_items, (p) => p.text);
-    addSection("確認事項", data.confirmations, (c) => c.text);
-    addSection("前回からの変更事項", data.changes_from_previous, (c) => c.text);
     return lines.join("\n").trim();
   },
 
@@ -104,36 +105,64 @@ const Minutes = {
     this._formEl.hidden = false;
   },
 
-  _linesToTextArea(items, mapper) {
-    return (items || []).map(mapper).join("\n");
-  },
-
   _buildEditForm() {
-    const data = this._current || {};
+    const sections = this._sectionsOf(this._current);
+    const blocks =
+      sections.length > 0
+        ? sections
+            .map((section, index) => {
+              const itemsText = (section.items || [])
+                .map((item) => this._itemLabel(item))
+                .join("\n");
+              return `
+          <div class="minutes-section-editor" data-index="${index}">
+            <label>見出し</label>
+            <input type="text" class="edit-section-title" value="${this._escape(section.title || "")}" />
+            <label>箇条書き(1行1件)</label>
+            <textarea class="edit-section-items" rows="4">${this._escape(itemsText)}</textarea>
+            <button type="button" class="btn btn-small remove-section-btn">この見出しを削除</button>
+          </div>`;
+            })
+            .join("")
+        : `
+        <div class="minutes-section-editor" data-index="0">
+          <label>見出し</label>
+          <input type="text" class="edit-section-title" value="" placeholder="例: 要点" />
+          <label>箇条書き(1行1件)</label>
+          <textarea class="edit-section-items" rows="4"></textarea>
+          <button type="button" class="btn btn-small remove-section-btn">この見出しを削除</button>
+        </div>`;
+
     this._formEl.innerHTML = `
-      <label>議題(1行1件)</label>
-      <textarea id="edit-topics">${this._linesToTextArea(data.topics, (t) => t.title)}</textarea>
-      <label>決定事項(1行1件)</label>
-      <textarea id="edit-decisions">${this._linesToTextArea(data.decisions, (d) => d.text)}</textarea>
-      <label>ToDo(1行1件、「作業内容 | 担当者 | 期限」の形式)</label>
-      <textarea id="edit-todos">${this._linesToTextArea(
-        data.todos,
-        (t) => `${t.task} | ${t.owner || ""} | ${t.deadline || ""}`
-      )}</textarea>
-      <label>保留事項(1行1件)</label>
-      <textarea id="edit-pending">${this._linesToTextArea(data.pending_items, (p) => p.text)}</textarea>
-      <label>確認事項(1行1件)</label>
-      <textarea id="edit-confirmations">${this._linesToTextArea(
-        data.confirmations,
-        (c) => c.text
-      )}</textarea>
-      <label>前回からの変更事項(1行1件)</label>
-      <textarea id="edit-changes">${this._linesToTextArea(
-        data.changes_from_previous,
-        (c) => c.text
-      )}</textarea>
-      <button id="save-minutes-btn" class="btn btn-primary btn-small">保存</button>
+      <div id="minutes-sections-editors">${blocks}</div>
+      <div class="utterance-editor-actions">
+        <button type="button" id="add-section-btn" class="btn btn-small">見出しを追加</button>
+        <button type="button" id="save-minutes-btn" class="btn btn-primary btn-small">保存</button>
+      </div>
     `;
+
+    this._formEl.querySelector("#add-section-btn").addEventListener("click", () => {
+      const container = this._formEl.querySelector("#minutes-sections-editors");
+      const div = document.createElement("div");
+      div.className = "minutes-section-editor";
+      div.innerHTML = `
+        <label>見出し</label>
+        <input type="text" class="edit-section-title" value="" />
+        <label>箇条書き(1行1件)</label>
+        <textarea class="edit-section-items" rows="4"></textarea>
+        <button type="button" class="btn btn-small remove-section-btn">この見出しを削除</button>
+      `;
+      container.appendChild(div);
+      div.querySelector(".remove-section-btn").addEventListener("click", () => div.remove());
+    });
+
+    this._formEl.querySelectorAll(".remove-section-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const block = btn.closest(".minutes-section-editor");
+        if (block) block.remove();
+      });
+    });
+
     this._formEl.querySelector("#save-minutes-btn").addEventListener("click", () => this._save());
   },
 
@@ -144,29 +173,24 @@ const Minutes = {
       .filter((line) => line.length > 0);
   },
 
+  _collectSectionsFromForm() {
+    const blocks = this._formEl.querySelectorAll(".minutes-section-editor");
+    const sections = [];
+    blocks.forEach((block) => {
+      const title = (block.querySelector(".edit-section-title").value || "").trim();
+      const lines = this._parseLines(block.querySelector(".edit-section-items").value);
+      if (!title && lines.length === 0) return;
+      sections.push({
+        title: title || "無題",
+        items: lines.map((text) => ({ text })),
+      });
+    });
+    return sections;
+  },
+
   async _save() {
     const meetingId = App.state.meetingId;
-    const payload = {
-      topics: this._parseLines(document.getElementById("edit-topics").value).map((title) => ({
-        title,
-      })),
-      decisions: this._parseLines(document.getElementById("edit-decisions").value).map((text) => ({
-        text,
-      })),
-      todos: this._parseLines(document.getElementById("edit-todos").value).map((line) => {
-        const [task, owner, deadline] = line.split("|").map((s) => (s || "").trim());
-        return { task, owner: owner || null, deadline: deadline || null };
-      }),
-      pending_items: this._parseLines(document.getElementById("edit-pending").value).map((text) => ({
-        text,
-      })),
-      confirmations: this._parseLines(document.getElementById("edit-confirmations").value).map(
-        (text) => ({ text })
-      ),
-      changes_from_previous: this._parseLines(document.getElementById("edit-changes").value).map(
-        (text) => ({ text })
-      ),
-    };
+    const payload = { sections: this._collectSectionsFromForm() };
     const updated = await Api.editMinutes(meetingId, payload);
     this.render(updated);
   },

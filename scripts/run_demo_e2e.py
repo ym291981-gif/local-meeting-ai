@@ -72,14 +72,22 @@ def main() -> None:
         print(f"[{u['start_ms'] / 1000:6.1f}s] ({speaker}) {u['effective_text']}")
 
     minutes_resp = requests.get(f"{args.base_url}/api/meetings/{meeting_id}/minutes/latest")
-    print("\n=== 最終議事録 ===")
+    print("\n=== 最終まとめ ===")
     if minutes_resp.status_code == 200:
         minutes = minutes_resp.json()
-        print(f"議題: {minutes['topics']}")
-        print(f"決定事項: {minutes['decisions']}")
-        print(f"ToDo: {minutes['todos']}")
+        for section in minutes.get("sections") or []:
+            print(f"## {section.get('title')}")
+            for item in section.get("items") or []:
+                text = item.get("text", "")
+                extras = []
+                if item.get("owner"):
+                    extras.append(f"担当: {item['owner']}")
+                if item.get("deadline"):
+                    extras.append(f"期限: {item['deadline']}")
+                suffix = f" ({', '.join(extras)})" if extras else ""
+                print(f"  - {text}{suffix}")
     else:
-        print("議事録が生成されませんでした(発言が検出されなかった可能性があります)")
+        print("まとめが生成されませんでした(発言が検出されなかった可能性があります)")
 
     print(
         "\n期待結果(要件定義書 第30章)との比較:\n"

@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     minutes_update_char_threshold: int = 300
     minutes_update_interval_seconds: float = 60.0
 
+    # Diarization queue backpressure (chunks held with audio samples).
+    # ~8 chunks ≈ 64s of audio at default AUDIO_CHUNK_SECONDS=8.
+    diarize_queue_maxsize: int = 8
+
     # Speaker clustering
     # コサイン距離がこの値以下なら同一話者。0.45だと短い発話で分裂しやすい。
     speaker_similarity_threshold: float = 0.65

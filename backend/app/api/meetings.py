@@ -6,8 +6,9 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import get_orchestrator
-from app.db.models import Meeting, MeetingStatus
+from app.db.models import DEFAULT_SUMMARY_MODE, Meeting, MeetingStatus
 from app.db.session import get_db
+from app.pipeline.minutes import normalize_summary_mode
 from app.pipeline.orchestrator import PipelineOrchestrator
 from app.schemas import MeetingCreate, MeetingOut
 
@@ -21,12 +22,21 @@ async def create_and_start_meeting(
     orchestrator: PipelineOrchestrator = Depends(get_orchestrator),
 ) -> Meeting:
     """新しい会議を作成し、即座にPC内部音声の取得〜文字起こしパイプラインを開始する。"""
-    meeting = Meeting(title=payload.title, status=MeetingStatus.IN_PROGRESS)
+    summary_mode = normalize_summary_mode(payload.summary_mode)
+    meeting = Meeting(
+        title=payload.title,
+        status=MeetingStatus.IN_PROGRESS,
+        summary_mode=summary_mode or DEFAULT_SUMMARY_MODE,
+    )
     db.add(meeting)
     db.commit()
     db.refresh(meeting)
 
-    orchestrator.start_meeting(meeting.id, min_speakers=payload.min_speakers)
+    orchestrator.start_meeting(
+        meeting.id,
+        min_speakers=payload.min_speakers,
+        summary_mode=meeting.summary_mode,
+    )
     return meeting
 
 

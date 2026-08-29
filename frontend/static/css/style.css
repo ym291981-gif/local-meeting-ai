@@ -65,6 +65,14 @@ body {
   width: 128px;
 }
 
+.meeting-controls select {
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  font-size: 14px;
+  background: #fff;
+}
+
 .meeting-status {
   font-size: 13px;
   color: var(--color-muted);
@@ -160,8 +168,25 @@ body {
   overflow-y: auto;
 }
 
+.connection-banner {
+  background: #fef3c7;
+  color: #92400e;
+  border-bottom: 1px solid #f59e0b;
+  padding: 8px 24px;
+  font-size: 13px;
+  text-align: center;
+}
+
+.connection-banner[hidden] {
+  display: none;
+}
+
 .transcript-panel {
   min-height: unset;
+}
+
+.transcript-list-wrap {
+  position: relative;
 }
 
 .transcript-list {
@@ -217,6 +242,41 @@ body {
   padding-left: 8px;
 }
 
+.utterance-editor {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.utterance-editor-label {
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+.utterance-speaker-select {
+  max-width: 240px;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.utterance-editor textarea {
+  width: 100%;
+  min-height: 60px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font: inherit;
+  resize: vertical;
+}
+
+.utterance-editor-actions {
+  display: flex;
+  gap: 6px;
+}
+
 .minutes-view section {
   margin-bottom: 12px;
 }
@@ -262,6 +322,31 @@ body {
   padding: 6px;
   border: 1px solid var(--color-border);
   border-radius: 6px;
+}
+
+.minutes-edit-form input[type="text"] {
+  width: 100%;
+  margin-bottom: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+
+.minutes-section-editor {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 10px;
+  margin-bottom: 10px;
+  background: #fafbfc;
+}
+
+.minutes-section-editor label {
+  display: block;
+  font-size: 12px;
+  color: var(--color-muted);
+  margin-bottom: 4px;
 }
 
 .speakers-list,

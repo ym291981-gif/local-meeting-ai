@@ -1,4 +1,4 @@
-"""議事録の取得・確認・修正API(要件定義書 第23〜26章)。"""
+"""まとめ(議事録等)の取得・確認・修正API。"""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import MinutesSnapshot
 from app.db.session import get_db
+from app.pipeline.minutes import sections_from_snapshot
 from app.schemas import MinutesEditRequest, MinutesOut
 
 router = APIRouter(prefix="/api/meetings/{meeting_id}/minutes", tags=["minutes"])
@@ -18,12 +19,7 @@ def _to_out(snapshot: MinutesSnapshot) -> MinutesOut:
         version=snapshot.version,
         is_final=snapshot.is_final,
         is_manually_edited=snapshot.is_manually_edited,
-        topics=snapshot.topics,
-        decisions=snapshot.decisions,
-        todos=snapshot.todos,
-        pending_items=snapshot.pending_items,
-        confirmations=snapshot.confirmations,
-        changes_from_previous=snapshot.changes_from_previous,
+        sections=sections_from_snapshot(snapshot),
         created_at=snapshot.created_at,
     )
 
@@ -41,7 +37,7 @@ def _latest(db: Session, meeting_id: int) -> MinutesSnapshot | None:
 async def get_latest_minutes(meeting_id: int, db: Session = Depends(get_db)) -> MinutesOut:
     snapshot = _latest(db, meeting_id)
     if snapshot is None:
-        raise HTTPException(status_code=404, detail="議事録がまだ生成されていません")
+        raise HTTPException(status_code=404, detail="まとめがまだ生成されていません")
     return _to_out(snapshot)
 
 
@@ -62,18 +58,25 @@ async def list_minutes_history(
 async def edit_latest_minutes(
     meeting_id: int, payload: MinutesEditRequest, db: Session = Depends(get_db)
 ) -> MinutesOut:
-    """会議中・会議後の人手による議事録修正(第25章)。
+    """会議中・会議後の人手によるまとめ修正。
 
     最新スナップショットを直接更新し is_manually_edited を立てる。次回の自動更新
     (差分更新)はこの修正後の内容を起点として実行される。
     """
     snapshot = _latest(db, meeting_id)
     if snapshot is None:
-        raise HTTPException(status_code=404, detail="議事録がまだ生成されていません")
+        raise HTTPException(status_code=404, detail="まとめがまだ生成されていません")
 
     update_data = payload.model_dump(exclude_unset=True)
-    for field_name, value in update_data.items():
-        setattr(snapshot, field_name, value)
+    if "sections" in update_data and update_data["sections"] is not None:
+        snapshot.sections = update_data["sections"]
+        # 新規は sections が正。旧カラムは空に揃える
+        snapshot.topics = []
+        snapshot.decisions = []
+        snapshot.todos = []
+        snapshot.pending_items = []
+        snapshot.confirmations = []
+        snapshot.changes_from_previous = []
     snapshot.is_manually_edited = True
 
     db.add(snapshot)

@@ -29,6 +29,20 @@ class MeetingStatus(str, enum.Enum):
     ENDED = "ended"
 
 
+# まとめ用途モード(議事録 / 勉強会 / 要約 / 自動)
+SUMMARY_MODE_AUTO = "auto"
+SUMMARY_MODE_MEETING = "meeting"
+SUMMARY_MODE_STUDY = "study"
+SUMMARY_MODE_SUMMARY = "summary"
+SUMMARY_MODES = (
+    SUMMARY_MODE_AUTO,
+    SUMMARY_MODE_MEETING,
+    SUMMARY_MODE_STUDY,
+    SUMMARY_MODE_SUMMARY,
+)
+DEFAULT_SUMMARY_MODE = SUMMARY_MODE_AUTO
+
+
 class Meeting(Base):
     __tablename__ = "meetings"
 
@@ -37,6 +51,7 @@ class Meeting(Base):
     status: Mapped[MeetingStatus] = mapped_column(
         Enum(MeetingStatus), default=MeetingStatus.IN_PROGRESS
     )
+    summary_mode: Mapped[str] = mapped_column(String(50), default=DEFAULT_SUMMARY_MODE)
     started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     ended_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -142,10 +157,12 @@ class Utterance(Base):
 
 
 class MinutesSnapshot(Base):
-    """Qwen3が生成する構造化議事録(要件定義書 第23〜24章、第29章 Layer3)。
+    """AIが生成する構造化まとめ(要件定義書 第23〜24章、第29章 Layer3)。
 
     会議の進行に合わせて version を重ねて保存し、is_final=True のものが
-    会議終了後の最終議事録となる。
+    会議終了後の最終まとめとなる。
+
+    正のデータは sections (見出し＋箇条書き)。旧6カラムは読み取り互換用に残す。
     """
 
     __tablename__ = "minutes_snapshots"
@@ -155,6 +172,10 @@ class MinutesSnapshot(Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
     is_final: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # 柔軟セクション: [{"title": "...", "items": [{"text": "...", ...}]}]
+    sections: Mapped[list] = mapped_column(JSON, default=list)
+
+    # 旧固定スキーマ(レガシー読み取り互換。新規保存では空のまま)
     topics: Mapped[list] = mapped_column(JSON, default=list)
     decisions: Mapped[list] = mapped_column(JSON, default=list)
     todos: Mapped[list] = mapped_column(JSON, default=list)

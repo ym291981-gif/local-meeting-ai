@@ -3,12 +3,23 @@ from __future__ import annotations
 
 import datetime as dt
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
+
+from app.db.models import DEFAULT_SUMMARY_MODE, SUMMARY_MODES
 
 
 class MeetingCreate(BaseModel):
     title: str = "無題の会議"
     min_speakers: int | None = None
+    summary_mode: str = DEFAULT_SUMMARY_MODE
+
+    @field_validator("summary_mode")
+    @classmethod
+    def _validate_summary_mode(cls, value: str) -> str:
+        mode = (value or DEFAULT_SUMMARY_MODE).strip().lower()
+        if mode not in SUMMARY_MODES:
+            return DEFAULT_SUMMARY_MODE
+        return mode
 
 
 class MeetingOut(BaseModel):
@@ -17,6 +28,7 @@ class MeetingOut(BaseModel):
     id: int
     title: str
     status: str
+    summary_mode: str = DEFAULT_SUMMARY_MODE
     started_at: dt.datetime
     ended_at: dt.datetime | None
 
@@ -73,39 +85,15 @@ class UtteranceCorrectionRequest(BaseModel):
     corrected_speaker_id: int | None = None
 
 
-class MinutesTopicOut(BaseModel):
-    title: str
-
-
-class MinutesDecisionOut(BaseModel):
-    text: str
-
-
-class MinutesTodoOut(BaseModel):
-    task: str
-    owner: str | None = None
-    deadline: str | None = None
-
-
 class MinutesOut(BaseModel):
     id: int
     meeting_id: int
     version: int
     is_final: bool
     is_manually_edited: bool
-    topics: list[dict]
-    decisions: list[dict]
-    todos: list[dict]
-    pending_items: list[dict]
-    confirmations: list[dict]
-    changes_from_previous: list[dict]
+    sections: list[dict]
     created_at: dt.datetime
 
 
 class MinutesEditRequest(BaseModel):
-    topics: list[dict] | None = None
-    decisions: list[dict] | None = None
-    todos: list[dict] | None = None
-    pending_items: list[dict] | None = None
-    confirmations: list[dict] | None = None
-    changes_from_previous: list[dict] | None = None
+    sections: list[dict] | None = None

@@ -9,10 +9,13 @@ const Api = {
     return res.json();
   },
 
-  createMeeting(title, minSpeakers) {
+  createMeeting(title, minSpeakers, summaryMode) {
     const body = { title: title || "無題の会議" };
     if (minSpeakers != null && minSpeakers >= 2) {
       body.min_speakers = minSpeakers;
+    }
+    if (summaryMode) {
+      body.summary_mode = summaryMode;
     }
     return fetch("/api/meetings", {
       method: "POST",
@@ -90,20 +93,68 @@ const Api = {
     }).then(this._json);
   },
 
+  /**
+   * 会議用WebSocket。切断時は指数バックオフで自動再接続する。
+   * 戻り値は close() で意図的切断できるハンドル。
+   */
   connectWebSocket(meetingId, handlers) {
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/ws/meetings/${meetingId}`);
-    ws.onmessage = (event) => {
-      let data;
-      try {
-        data = JSON.parse(event.data);
-      } catch (e) {
-        return;
+    const url = `${proto}://${location.host}/ws/meetings/${meetingId}`;
+    let closedIntentionally = false;
+    let attempt = 0;
+    let ws = null;
+    let reconnectTimer = null;
+
+    const clearReconnect = () => {
+      if (reconnectTimer != null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
       }
-      if (data.type === "utterance" && handlers.onUtterance) handlers.onUtterance(data.utterance);
-      if (data.type === "minutes" && handlers.onMinutes) handlers.onMinutes(data.minutes);
-      if (data.type === "meeting_ended" && handlers.onMeetingEnded) handlers.onMeetingEnded();
     };
-    return ws;
+
+    const attach = () => {
+      ws = new WebSocket(url);
+      ws.onopen = () => {
+        attempt = 0;
+        if (handlers.onConnected) handlers.onConnected();
+      };
+      ws.onmessage = (event) => {
+        let data;
+        try {
+          data = JSON.parse(event.data);
+        } catch (e) {
+          return;
+        }
+        if (data.type === "utterance" && handlers.onUtterance) handlers.onUtterance(data.utterance);
+        if (data.type === "minutes" && handlers.onMinutes) handlers.onMinutes(data.minutes);
+        if (data.type === "meeting_ended" && handlers.onMeetingEnded) handlers.onMeetingEnded();
+      };
+      ws.onerror = () => {
+        // onclose で再接続するため、ここではログのみ
+      };
+      ws.onclose = () => {
+        if (closedIntentionally) return;
+        if (handlers.onDisconnected) handlers.onDisconnected();
+        const delay = Math.min(30000, 1000 * 2 ** attempt);
+        attempt += 1;
+        clearReconnect();
+        reconnectTimer = setTimeout(attach, delay);
+      };
+    };
+
+    attach();
+
+    return {
+      close() {
+        closedIntentionally = true;
+        clearReconnect();
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+          ws.close();
+        }
+      },
+      get readyState() {
+        return ws ? ws.readyState : WebSocket.CLOSED;
+      },
+    };
   },
 };

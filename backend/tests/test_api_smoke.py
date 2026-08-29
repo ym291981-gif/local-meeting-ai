@@ -110,15 +110,25 @@ def test_speaker_assign_and_transcript_correction_flow(client):
     assert resp.json()["is_manually_corrected"] is True
 
 
+def test_create_meeting_passes_summary_mode(client):
+    resp = client.post(
+        "/api/meetings",
+        json={"title": "勉強会", "summary_mode": "study"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["summary_mode"] == "study"
+    assert client.fake_orchestrator.summary_mode_args == ["study"]
+
+
 def test_minutes_edit_flow(client):
     import app.main as main_module  # noqa: F401
     from app.db.models import MinutesSnapshot
     from app.db.session import SessionLocal
 
-    meeting = client.post("/api/meetings", json={"title": "議事録テスト"}).json()
+    meeting = client.post("/api/meetings", json={"title": "まとめテスト"}).json()
     meeting_id = meeting["id"]
 
-    # 議事録が1件もない場合は404
+    # まとめが1件もない場合は404
     resp = client.get(f"/api/meetings/{meeting_id}/minutes/latest")
     assert resp.status_code == 404
 
@@ -126,8 +136,46 @@ def test_minutes_edit_flow(client):
     snapshot = MinutesSnapshot(
         meeting_id=meeting_id,
         version=1,
-        topics=[{"title": "A案件の納期"}],
-        decisions=[],
+        sections=[{"title": "議題", "items": [{"text": "A案件の納期"}]}],
+    )
+    db_session.add(snapshot)
+    db_session.commit()
+    db_session.close()
+
+    resp = client.get(f"/api/meetings/{meeting_id}/minutes/latest")
+    assert resp.status_code == 200
+    assert resp.json()["sections"][0]["title"] == "議題"
+    assert resp.json()["sections"][0]["items"][0]["text"] == "A案件の納期"
+
+    resp = client.patch(
+        f"/api/meetings/{meeting_id}/minutes/latest",
+        json={
+            "sections": [
+                {"title": "議題", "items": [{"text": "A案件の納期"}]},
+                {"title": "決定事項", "items": [{"text": "納期を8月27日に変更する"}]},
+            ]
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["sections"][1]["items"][0]["text"] == "納期を8月27日に変更する"
+    assert resp.json()["is_manually_edited"] is True
+
+
+def test_minutes_latest_converts_legacy_columns(client):
+    import app.main as main_module  # noqa: F401
+    from app.db.models import MinutesSnapshot
+    from app.db.session import SessionLocal
+
+    meeting = client.post("/api/meetings", json={"title": "レガシー"}).json()
+    meeting_id = meeting["id"]
+
+    db_session = SessionLocal()
+    snapshot = MinutesSnapshot(
+        meeting_id=meeting_id,
+        version=1,
+        sections=[],
+        topics=[{"title": "旧議題"}],
+        decisions=[{"text": "旧決定"}],
         todos=[],
         pending_items=[],
         confirmations=[],
@@ -139,15 +187,10 @@ def test_minutes_edit_flow(client):
 
     resp = client.get(f"/api/meetings/{meeting_id}/minutes/latest")
     assert resp.status_code == 200
-    assert resp.json()["topics"][0]["title"] == "A案件の納期"
-
-    resp = client.patch(
-        f"/api/meetings/{meeting_id}/minutes/latest",
-        json={"decisions": [{"text": "納期を8月27日に変更する"}]},
-    )
-    assert resp.status_code == 200
-    assert resp.json()["decisions"][0]["text"] == "納期を8月27日に変更する"
-    assert resp.json()["is_manually_edited"] is True
+    sections = resp.json()["sections"]
+    titles = [s["title"] for s in sections]
+    assert "議題" in titles
+    assert "決定事項" in titles
 
 
 def test_utterance_ws_payload_includes_raw_text(test_db):

@@ -11,6 +11,12 @@
   <h1>リアルタイムAI議事録・文書活用支援ツール</h1>
   <div class="meeting-controls">
     <input id="meeting-title-input" type="text" placeholder="会議名(例: 定例会議)" />
+    <select id="summary-mode-select" title="まとめの用途ヒント。AIが見出しを臨機応変に選びます。">
+      <option value="auto" selected>自動</option>
+      <option value="meeting">議事録</option>
+      <option value="study">勉強会</option>
+      <option value="summary">要約</option>
+    </select>
     <input id="speaker-count-input" type="number" min="2" max="15" placeholder="話者数(任意)" title="会議全体の人数（上限）。各瞬間の人数ではありません。空欄なら自動推定します。" />
     <button id="start-meeting-btn" class="btn btn-primary">会議を開始</button>
     <button id="stop-meeting-btn" class="btn btn-danger" disabled>会議を終了</button>
@@ -18,18 +24,20 @@
   </div>
 </header>
 
+<div id="connection-banner" class="connection-banner" hidden role="status"></div>
+
 <main class="app-main">
   <section class="panel minutes-panel">
     <div class="panel-title-row">
-      <h2>議事録</h2>
+      <h2>まとめ</h2>
       <div class="panel-actions">
         <button id="copy-minutes-btn" class="btn btn-small" disabled>コピー</button>
         <button id="edit-minutes-btn" class="btn btn-small" disabled>修正する</button>
       </div>
     </div>
-    <p class="panel-hint">Qwen3が整理した議事録です。会議中でも確認・修正できます。終了後はコピーして残しておけます。</p>
+    <p class="panel-hint">用途に応じてAIが見出しを臨機応変に整理します。会議中でも確認・修正できます。終了後はコピーして残しておけます。</p>
     <div id="minutes-view" class="minutes-view">
-      <p class="empty-hint">まだ議事録は生成されていません。</p>
+      <p class="empty-hint">まだまとめは生成されていません。</p>
     </div>
     <div id="minutes-edit-form" class="minutes-edit-form" hidden></div>
   </section>
@@ -38,10 +46,15 @@
     <section class="panel transcript-panel">
       <div class="panel-title-row">
         <h2>会議全文記録(文字起こし)</h2>
-        <button id="copy-transcript-btn" class="btn btn-small" disabled>コピー</button>
+        <div class="panel-actions">
+          <button id="jump-latest-btn" class="btn btn-small" type="button" hidden>最新へ</button>
+          <button id="copy-transcript-btn" class="btn btn-small" disabled>コピー</button>
+        </div>
       </div>
-      <p class="panel-hint">Whisperによる準リアルタイム文字起こし。発言をクリックすると内容や話者を修正できます。終了後はコピーして残しておけます。</p>
-      <div id="transcript-list" class="transcript-list"></div>
+      <p class="panel-hint">Whisperによる準リアルタイム文字起こし。発言をクリックすると内容や話者を修正できます。上にスクロールすると最新追従が止まります。終了後はコピーして残しておけます。</p>
+      <div id="transcript-list-wrap" class="transcript-list-wrap">
+        <div id="transcript-list" class="transcript-list"></div>
+      </div>
     </section>
 
     <section class="panel speakers-panel">

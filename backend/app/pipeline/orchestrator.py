@@ -30,7 +30,7 @@ from app.pipeline.diarization import (
     slice_audio,
     speakers_for_segments,
 )
-from app.pipeline.minutes import MinutesData, MinutesGenerator
+from app.pipeline.minutes import MinutesData, MinutesGenerator, sections_from_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,7 @@ class _MeetingRuntime:
     thread: threading.Thread
     capture: WasapiLoopbackCapture | None = None
     min_speakers: int | None = None
+    summary_mode: str = "auto"
     started_at: float = field(default_factory=time.time)
     chars_since_minutes_update: int = 0
     last_minutes_update_ts: float = field(default_factory=time.time)
@@ -97,7 +98,12 @@ class PipelineOrchestrator:
     def is_running(self, meeting_id: int) -> bool:
         return meeting_id in self._runtimes
 
-    def start_meeting(self, meeting_id: int, min_speakers: int | None = None) -> None:
+    def start_meeting(
+        self,
+        meeting_id: int,
+        min_speakers: int | None = None,
+        summary_mode: str = "auto",
+    ) -> None:
         if meeting_id in self._runtimes:
             logger.warning("会議%sは既に開始されています", meeting_id)
             return
@@ -110,6 +116,7 @@ class PipelineOrchestrator:
             stop_event=stop_event,
             thread=thread,
             min_speakers=min_speakers,
+            summary_mode=summary_mode or "auto",
         )
         self._runtimes[meeting_id] = runtime
         thread.start()
@@ -287,16 +294,41 @@ class PipelineOrchestrator:
         if not utterance_ids:
             return
 
-        runtime.diarize_queue.put(
+        self._enqueue_diarize_job(
+            runtime,
             _DiarizeJob(
                 samples=np.ascontiguousarray(chunk.samples.copy()),
                 sample_rate=chunk.sample_rate,
                 chunk_start_ms=chunk.start_ms,
                 utterance_ids=utterance_ids,
                 queued_at=time.time(),
-            )
+            ),
         )
         self._maybe_schedule_minutes(runtime)
+
+    def _enqueue_diarize_job(self, runtime: _MeetingRuntime, job: _DiarizeJob) -> None:
+        """話者分離キューに上限を設け、満杯時は古いジョブを破棄してメモリ肥大を防ぐ。"""
+        maxsize = max(1, int(self._settings.diarize_queue_maxsize))
+        q = runtime.diarize_queue
+        dropped = 0
+        while q.qsize() >= maxsize:
+            try:
+                old = q.get_nowait()
+            except queue.Empty:
+                break
+            if old is _SENTINEL:
+                q.put(_SENTINEL)
+                break
+            dropped += 1
+        if dropped:
+            logger.warning(
+                "話者分離キューが上限(%s)に達したため古いジョブを%d件破棄しました(会議%s)。"
+                "文字起こしは継続し、破棄分の話者割当のみスキップします",
+                maxsize,
+                dropped,
+                runtime.meeting_id,
+            )
+        q.put(job)
 
     def _run_diarize_loop(self, runtime: _MeetingRuntime) -> None:
         db = SessionLocal()
@@ -402,8 +434,16 @@ class PipelineOrchestrator:
                 if job is _SENTINEL:
                     break
                 try:
+                    if self._latest_minutes_is_manually_edited(db, runtime.meeting_id):
+                        logger.info(
+                            "最新議事録が手動編集済みのため自動更新をスキップします(会議%s)",
+                            runtime.meeting_id,
+                        )
+                        continue
                     current = self._load_latest_minutes(db, runtime.meeting_id)
-                    updated = self._minutes_generator.update(current, job.new_text)
+                    updated = self._minutes_generator.update(
+                        current, job.new_text, summary_mode=runtime.summary_mode
+                    )
                     self._save_minutes_snapshot(
                         db, runtime.meeting_id, updated, is_final=False
                     )
@@ -414,6 +454,15 @@ class PipelineOrchestrator:
                     db.rollback()
         finally:
             db.close()
+
+    def _latest_minutes_is_manually_edited(self, db, meeting_id: int) -> bool:
+        snapshot = (
+            db.query(MinutesSnapshot)
+            .filter(MinutesSnapshot.meeting_id == meeting_id)
+            .order_by(MinutesSnapshot.version.desc())
+            .first()
+        )
+        return snapshot is not None and bool(snapshot.is_manually_edited)
 
     def _maybe_schedule_minutes(self, runtime: _MeetingRuntime) -> None:
         with runtime.buffer_lock:
@@ -441,14 +490,7 @@ class PipelineOrchestrator:
         )
         if snapshot is None:
             return MinutesData.empty()
-        return MinutesData(
-            topics=snapshot.topics,
-            decisions=snapshot.decisions,
-            todos=snapshot.todos,
-            pending_items=snapshot.pending_items,
-            confirmations=snapshot.confirmations,
-            changes_from_previous=snapshot.changes_from_previous,
-        )
+        return MinutesData(sections=sections_from_snapshot(snapshot))
 
     def _save_minutes_snapshot(
         self, db, meeting_id: int, minutes: MinutesData, is_final: bool
@@ -465,7 +507,13 @@ class PipelineOrchestrator:
             meeting_id=meeting_id,
             version=next_version,
             is_final=is_final,
-            **minutes.to_dict(),
+            sections=minutes.sections,
+            topics=[],
+            decisions=[],
+            todos=[],
+            pending_items=[],
+            confirmations=[],
+            changes_from_previous=[],
         )
         db.add(snapshot)
         db.commit()
@@ -477,9 +525,11 @@ class PipelineOrchestrator:
                 "type": "minutes",
                 "minutes": {
                     "id": snapshot.id,
+                    "meeting_id": snapshot.meeting_id,
                     "version": snapshot.version,
                     "is_final": snapshot.is_final,
-                    **minutes.to_dict(),
+                    "is_manually_edited": snapshot.is_manually_edited,
+                    "sections": minutes.sections,
                 },
             },
         )
@@ -499,7 +549,9 @@ class PipelineOrchestrator:
         full_text = "\n".join(u.effective_text for u in utterances)
 
         current = self._load_latest_minutes(db, meeting_id)
-        final_minutes = self._minutes_generator.generate_final(current, full_text)
+        final_minutes = self._minutes_generator.generate_final(
+            current, full_text, summary_mode=runtime.summary_mode
+        )
         self._save_minutes_snapshot(db, meeting_id, final_minutes, is_final=True)
 
         meeting = db.get(Meeting, meeting_id)
